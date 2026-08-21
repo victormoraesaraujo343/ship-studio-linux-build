@@ -234,6 +234,7 @@ pub async fn get_full_setup_status() -> FullSetupStatus {
     let node_path = find_executable("node");
     let git_path = find_executable("git");
     let gh_path = find_executable("gh");
+    let glab_path = find_executable("glab");
     let vercel_path = find_executable("vercel");
     let agent_paths: Vec<Option<std::path::PathBuf>> = ALL_AGENTS
         .iter()
@@ -303,6 +304,40 @@ pub async fn get_full_setup_status() -> FullSetupStatus {
             None
         };
         (version, authed, username)
+    };
+    // GitLab is the optional alternative to GitHub: probed the same way, but
+    // absent `glab` is a normal state rather than an incomplete setup, so both
+    // items land in OPTIONAL_ITEMS on the frontend.
+    let glab_fut = async {
+        let Some(glab) = &glab_path else {
+            return (None, None);
+        };
+        let version = probe_stdout_first_line(glab, &["--version"], LOCAL_PROBE_TIMEOUT_SECS).await;
+
+        // Same reasoning as gh above: parse the report, don't trust the exit
+        // code — glab exits non-zero when any configured instance has a bad
+        // token, even if the one the user works on is fine.
+        let username = run_with_timeout(
+            tokio::process::Command::from({
+                let mut cmd = crate::commands::git_provider::cli_command(
+                    crate::commands::git_provider::GitProvider::GitLab,
+                );
+                cmd.args(["auth", "status", "-a"]);
+                cmd
+            }),
+            "glab auth status",
+            NETWORK_PROBE_TIMEOUT_SECS,
+        )
+        .await
+        .ok()
+        .and_then(|o| {
+            crate::commands::gitlab::parse_glab_auth_status(
+                &String::from_utf8_lossy(&o.stdout),
+                &String::from_utf8_lossy(&o.stderr),
+            )
+        });
+
+        (version, username)
     };
     let agents_fut = futures_util::future::join_all(ALL_AGENTS.iter().zip(&agent_paths).map(
         |(agent, agent_path)| async move {
@@ -401,6 +436,7 @@ pub async fn get_full_setup_status() -> FullSetupStatus {
         node_version,
         git_version,
         (gh_version, gh_auth, gh_username),
+        (glab_version, glab_username),
         agent_probes,
         (vercel_version, vercel_whoami_result),
         (claude_auth_active, claude_auth_global),
@@ -409,6 +445,7 @@ pub async fn get_full_setup_status() -> FullSetupStatus {
         node_fut,
         git_fut,
         gh_fut,
+        glab_fut,
         agents_fut,
         vercel_fut,
         claude_auth_fut
@@ -522,6 +559,38 @@ pub async fn get_full_setup_status() -> FullSetupStatus {
         },
         version: None,
         username: gh_username,
+        error_message: None,
+    });
+
+    // 5b. GitLab CLI + account — the optional alternative to GitHub, for people
+    // whose work lives on GitLab (self-hosted included). Reported always, so the
+    // UI can offer it; never required, so a machine without `glab` still
+    // completes setup. `allReady` deliberately does not consider these.
+    items.push(SetupItemInfo {
+        id: "glab".to_string(),
+        friendly_name: "GitLab CLI".to_string(),
+        status: if glab_path.is_some() {
+            SetupItemStatus::Ready
+        } else {
+            SetupItemStatus::NotInstalled
+        },
+        version: glab_version,
+        username: None,
+        error_message: None,
+    });
+
+    items.push(SetupItemInfo {
+        id: "glab_auth".to_string(),
+        friendly_name: "GitLab Account".to_string(),
+        status: if glab_username.is_some() {
+            SetupItemStatus::Ready
+        } else if glab_path.is_some() {
+            SetupItemStatus::NotAuthenticated
+        } else {
+            SetupItemStatus::NotInstalled
+        },
+        version: None,
+        username: glab_username,
         error_message: None,
     });
 

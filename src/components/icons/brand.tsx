@@ -25,6 +25,26 @@ export function GitHubIcon({ size = 16 }: IconProps) {
   );
 }
 
+/** GitLab's tanuki mark (simple-icons geometry). */
+export function GitLabIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M23.955 13.587l-1.342-4.135-2.664-8.189a.455.455 0 00-.867 0L16.418 9.45H7.582L4.919 1.263a.455.455 0 00-.867 0L1.386 9.45.044 13.587a.924.924 0 00.331 1.03L12 23.054l11.625-8.436a.92.92 0 00.33-1.031" />
+    </svg>
+  );
+}
+
+/**
+ * The mark for whichever forge a project uses.
+ *
+ * Pairing GitHub's octocat with the words "View on GitLab" is the visible half
+ * of showing the wrong forge — so the icon follows the same provider the copy
+ * does.
+ */
+export function ForgeIcon({ provider, size = 16 }: IconProps & { provider?: string | null }) {
+  return provider === 'gitlab' ? <GitLabIcon size={size} /> : <GitHubIcon size={size} />;
+}
+
 export function VercelIcon({ size = 16 }: IconProps) {
   // Official mark is an equilateral triangle: 24 wide, 24·√3/2 ≈ 20.78 tall,
   // vertically centered in the viewBox (simple-icons geometry).

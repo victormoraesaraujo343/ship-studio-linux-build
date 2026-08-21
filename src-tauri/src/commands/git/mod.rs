@@ -65,7 +65,21 @@ pub(crate) async fn run_git_net(
     // clears any inherited helper (e.g. osxkeychain) so a globally-cached
     // credential can't shadow gh. These are git *global* options, so they must
     // precede the subcommand in `args`.
-    if let Some(gh) = find_executable("gh") {
+    //
+    // Skipped for a GitLab remote. `gh auth git-credential` only knows GitHub
+    // hosts, and `glab` has no credential-helper subcommand to swap in — so
+    // clearing the native helper and routing to gh would leave a GitLab HTTPS
+    // push with no credentials at all, failing outright under
+    // GIT_TERMINAL_PROMPT=0. GitLab users authenticate git the way `glab auth
+    // login` sets up (a stored helper, or SSH), which is exactly what the
+    // untouched native resolution finds. Detection falls back to GitHub for an
+    // unidentified host, so nothing that worked before changes.
+    let is_gitlab = matches!(
+        crate::commands::git_provider::provider_for_dir(cwd).await,
+        Ok(Some(crate::commands::git_provider::GitProvider::GitLab))
+    );
+
+    if let Some(gh) = find_executable("gh").filter(|_| !is_gitlab) {
         cmd.arg("-c").arg("credential.helper=");
         // Git hands a `!`-prefixed helper to `sh -c`, which word-splits on
         // spaces — so the path must be quoted or a default Windows install

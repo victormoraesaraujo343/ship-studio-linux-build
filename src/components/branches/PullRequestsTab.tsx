@@ -1,7 +1,9 @@
 /**
  * Pull Requests tab for workspace.
  *
- * Shows open and recently merged pull requests.
+ * Shows a project's open and recently merged change requests — pull requests on
+ * GitHub, merge requests on GitLab. The data shape is identical either way; only
+ * the wording differs, and that comes from `providerTerms`.
  *
  * @module components/PullRequestsTab
  */
@@ -18,13 +20,14 @@ import {
   switchBranch,
 } from '../../lib/branches';
 import { useAsyncState } from '../../hooks/useAsyncState';
-import { GitHubIcon, WarningIcon, BranchIcon } from '../icons';
+import { ForgeIcon, WarningIcon, BranchIcon } from '../icons';
 import { trackEvent, trackError } from '../../lib/analytics';
 import { ModalFrame } from '../primitives/ModalFrame';
 import { Button } from '../primitives/Button';
 import { Spinner } from '../primitives/Spinner';
 import { useOptionalToast } from '../../contexts/ToastContext';
 import { asCommandError, formatCommandError, isMergeConflictError } from '../../lib/errors';
+import { providerTerms, type GitProvider, type ProviderTerms } from '../../lib/gitProvider';
 
 interface PullRequestsTabProps {
   /** Project path for PR operations */
@@ -41,6 +44,11 @@ interface PullRequestsTabProps {
   onNavigateToBranches?: () => void;
   /** Callback to resolve conflicts for a PR (headBranch, baseBranch) */
   onResolveConflicts?: (headBranch: string, baseBranch: string) => void;
+  /**
+   * Forge the project's remote points at. Only affects wording — GitLab calls
+   * these merge requests. Omitted/null falls back to GitHub's vocabulary.
+   */
+  provider?: GitProvider | null;
 }
 
 export function PullRequestsTab({
@@ -51,7 +59,9 @@ export function PullRequestsTab({
   onBranchSwitch,
   onNavigateToBranches,
   onResolveConflicts,
+  provider,
 }: PullRequestsTabProps) {
+  const terms = providerTerms(provider);
   const { showToast } = useOptionalToast();
   const onToast = (message: string, type?: 'success' | 'error' | 'info') =>
     showToast(message, type);
@@ -121,7 +131,7 @@ export function PullRequestsTab({
         base_ref: baseRef,
         $screen_name: 'Workspace',
       });
-      onToast?.('Pull request merged', 'success');
+      onToast?.(`${terms.changeRequestSentence} merged`, 'success');
       await fetchPullRequests();
       onRefresh();
       // Show post-merge cleanup dialog
@@ -136,7 +146,7 @@ export function PullRequestsTab({
         // Expected, by-design state with dedicated follow-up UI (the conflict
         // resolver opens right below) — info toast, NOT 'error': error toasts
         // auto-file bug reports and this isn't a bug (issue #632).
-        onToast?.('This pull request has merge conflicts', 'info');
+        onToast?.(`This ${terms.changeRequest} has merge conflicts`, 'info');
         onResolveConflicts(headRef, baseRef);
       } else {
         onToast?.(`Failed to merge: ${formatCommandError(asCommandError(e))}`, 'error');
@@ -208,12 +218,15 @@ export function PullRequestsTab({
     try {
       await closePullRequest(projectPath, prNumber);
       void trackEvent('pr_closed', { $screen_name: 'Workspace' });
-      onToast?.('Pull request closed', 'success');
+      onToast?.(`${terms.changeRequestSentence} closed`, 'success');
       await fetchPullRequests();
       onRefresh();
     } catch (e) {
       trackError('pr_close', e, 'Workspace');
-      onToast?.(`Failed to close PR: ${formatCommandError(asCommandError(e))}`, 'error');
+      onToast?.(
+        `Failed to close ${terms.abbrev}: ${formatCommandError(asCommandError(e))}`,
+        'error'
+      );
     } finally {
       setClosingPr(null);
     }
@@ -228,7 +241,7 @@ export function PullRequestsTab({
       <div className="prs-tab">
         <div className="prs-tab-loading">
           <Spinner size="lg" />
-          <span>Loading pull requests...</span>
+          <span>Loading {terms.changeRequestPlural}...</span>
         </div>
       </div>
     );
@@ -238,7 +251,7 @@ export function PullRequestsTab({
     return (
       <div className="prs-tab">
         <div className="prs-tab-error">
-          <p>Failed to load pull requests</p>
+          <p>Failed to load {terms.changeRequestPlural}</p>
           <button onClick={() => void fetchPullRequests()}>Try Again</button>
         </div>
       </div>
@@ -255,10 +268,11 @@ export function PullRequestsTab({
             <div className="prs-tab-empty-icon">
               <BranchIcon size={32} />
             </div>
-            <h3 className="prs-tab-empty-title">No open pull requests</h3>
+            <h3 className="prs-tab-empty-title">No open {terms.changeRequestPlural}</h3>
             <p className="prs-tab-empty-description">
-              Pull requests let you propose changes and get feedback before merging into the main
-              branch. Create a branch, make your changes, then submit it for review.
+              {terms.changeRequestPluralSentence} let you propose changes and get feedback before
+              merging into the main branch. Create a branch, make your changes, then submit it for
+              review.
             </p>
             {onNavigateToBranches && (
               <button className="prs-tab-empty-action" onClick={onNavigateToBranches}>
@@ -271,6 +285,8 @@ export function PullRequestsTab({
             <PrCard
               key={pr.number}
               pr={pr}
+              terms={terms}
+              provider={provider}
               isOwn={pr.author === githubUsername}
               isCheckedOut={currentBranch === pr.headRef || checkedOutHead === pr.headRef}
               isMerging={mergingPr === pr.number}
@@ -293,6 +309,8 @@ export function PullRequestsTab({
             <PrCard
               key={pr.number}
               pr={pr}
+              terms={terms}
+              provider={provider}
               isOwn={pr.author === githubUsername}
               isMerging={false}
             />
@@ -306,7 +324,7 @@ export function PullRequestsTab({
           isOpen
           onClose={() => setConfirmMergePr(null)}
           dismissable={!mergingPr}
-          title="Merge Pull Request?"
+          title={`Merge ${terms.changeRequestTitle}?`}
           className="post-merge-content"
         >
           <div className="post-merge-body">
@@ -381,7 +399,7 @@ export function PullRequestsTab({
           isOpen
           onClose={() => setConfirmClosePr(null)}
           dismissable={!closingPr}
-          title="Close Pull Request?"
+          title={`Close ${terms.changeRequestTitle}?`}
           className="post-merge-content"
         >
           <div className="post-merge-body">
@@ -391,7 +409,8 @@ export function PullRequestsTab({
                 #{confirmClosePr.number} {confirmClosePr.title}
               </strong>{' '}
               without merging. The <strong>{confirmClosePr.headRef}</strong> branch will still exist
-              and no progress will be lost. You can reopen this PR later from GitHub.
+              and no progress will be lost. You can reopen this {terms.abbrev} later from{' '}
+              {terms.name}.
             </p>
           </div>
           <div className="post-merge-footer">
@@ -409,7 +428,7 @@ export function PullRequestsTab({
               }}
               disabled={!!closingPr}
             >
-              {closingPr ? 'Closing...' : 'Close PR'}
+              {closingPr ? 'Closing...' : `Close ${terms.abbrev}`}
             </Button>
           </div>
         </ModalFrame>
@@ -427,8 +446,8 @@ export function PullRequestsTab({
           <div className="post-merge-body">
             <p>
               This will switch your project to the <strong>{confirmCheckoutPr.headRef}</strong>{' '}
-              branch and pull the latest changes from the pull request. Any uncommitted changes on
-              your current branch will be stashed.
+              branch and pull the latest changes from the {terms.changeRequest}. Any uncommitted
+              changes on your current branch will be stashed.
             </p>
           </div>
           <div className="post-merge-footer">
@@ -459,6 +478,10 @@ export function PullRequestsTab({
 
 interface PrCardProps {
   pr: PullRequestInfo;
+  /** Forge vocabulary, resolved once by the parent. */
+  terms: ProviderTerms;
+  /** Raw provider id, for the forge mark beside the link. */
+  provider?: GitProvider | null;
   isOwn: boolean;
   isCheckedOut?: boolean;
   isMerging: boolean;
@@ -472,6 +495,8 @@ interface PrCardProps {
 
 function PrCard({
   pr,
+  terms,
+  provider,
   isOwn,
   isCheckedOut,
   isMerging,
@@ -502,8 +527,8 @@ function PrCard({
   };
 
   const hasConflicts = pr.mergeable === false;
-  // Drafts are refused by GitHub with a raw GraphQL error — don't offer a
-  // Merge that's doomed to fail (issue #482).
+  // Drafts are refused by the forge with a raw error (a GraphQL one on GitHub)
+  // — don't offer a Merge that's doomed to fail (issue #482).
   const canMerge = pr.state === 'OPEN' && pr.mergeable !== false && !pr.isDraft;
 
   return (
@@ -514,7 +539,10 @@ function PrCard({
           <div className="pr-card-title">{pr.title}</div>
           <span className="pr-card-number">#{pr.number}</span>
           {pr.isDraft && (
-            <span className="pr-card-number" title="Draft pull requests can't be merged yet">
+            <span
+              className="pr-card-number"
+              title={`Draft ${terms.changeRequestPlural} can't be merged yet`}
+            >
               Draft
             </span>
           )}
@@ -548,9 +576,9 @@ function PrCard({
           <button
             className="branch-card-action pr-card-icon-btn"
             onClick={() => void openUrl(pr.url)}
-            title="View on GitHub"
+            title={`View on ${terms.name}`}
           >
-            <GitHubIcon size={16} />
+            <ForgeIcon provider={provider} size={16} />
           </button>
           {onCheckout && !isCheckedOut && (
             <Button variant="secondary" size="sm" onClick={onCheckout} disabled={isCheckingOut}>

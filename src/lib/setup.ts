@@ -116,6 +116,10 @@ export interface FullSetupStatus {
  */
 export const OPTIONAL_ITEMS = new Set([
   'gh_auth',
+  // GitLab is the alternative to GitHub, not an addition to it — a machine
+  // that only ever talks to GitHub must still complete setup.
+  'glab',
+  'glab_auth',
   'claude',
   'claude_auth',
   'codex',
@@ -146,6 +150,7 @@ export type SetupTier = 'machine' | 'workspace';
 /** The five per-workspace logins (the `*_auth` items). Everything else is machine-tier. */
 export const WORKSPACE_LOGIN_ITEM_IDS = new Set([
   'gh_auth',
+  'glab_auth',
   'claude_auth',
   'codex_auth',
   'opencode_auth',
@@ -160,6 +165,7 @@ export const MACHINE_ITEM_IDS = new Set([
   'npm_fix',
   'git',
   'gh',
+  'glab',
   'claude',
   'codex',
   'opencode',
@@ -189,6 +195,8 @@ export function getSetupDependencies(): Record<string, string[]> {
     git: ['homebrew'],
     gh: ['homebrew'],
     gh_auth: ['gh'],
+    glab: [], // Optional GitLab alternative; installed via its own package
+    glab_auth: ['glab'],
     claude: [], // Uses its own installer (native, not npm)
     claude_auth: ['claude'],
     codex: ['node'], // npm global install — fails with a misleading error without Node
@@ -214,6 +222,8 @@ export const SETUP_ITEM_ORDER = [
   'git',
   'gh',
   'gh_auth',
+  'glab',
+  'glab_auth',
   'claude',
   'claude_auth',
   'codex',
@@ -234,6 +244,8 @@ export const SETUP_FRIENDLY_NAMES: Record<string, string> = {
   git: 'Git',
   gh: 'GitHub CLI',
   gh_auth: 'GitHub Account',
+  glab: 'GitLab CLI',
+  glab_auth: 'GitLab Account',
   claude: 'Claude Code',
   claude_auth: 'Claude Account',
   codex: 'Codex',
@@ -254,6 +266,8 @@ export const SETUP_PROGRESS_MESSAGES: Record<string, string> = {
   git: 'Installing Git...',
   gh: 'Installing GitHub CLI...',
   gh_auth: 'Connecting to GitHub...',
+  glab: 'Installing GitLab CLI...',
+  glab_auth: 'Connecting to GitLab...',
   claude: 'Installing Claude Code...',
   claude_auth: 'Connecting to Claude...',
   codex: 'Installing Codex...',
@@ -274,6 +288,8 @@ export const SETUP_TIME_ESTIMATES: Record<string, string> = {
   git: '~5 sec',
   gh: '~1 min',
   gh_auth: '~15 sec',
+  glab: '~1 min',
+  glab_auth: '~15 sec',
   claude: '~10 sec',
   claude_auth: '~15 sec',
   codex: '~15 sec',
@@ -438,7 +454,9 @@ export const WIZARD_STEPS: WizardStepDef[] = [
     id: 'git-github',
     title: 'Git & GitHub',
     subtitle: 'Save your work safely and publish it online. Required.',
-    itemIds: ['git', 'gh', 'gh_auth'],
+    // glab rides along so people whose work lives on GitLab can set it up
+    // here, but it never gates the step — see STEP_OPTIONAL_ITEM_IDS.
+    itemIds: ['git', 'gh', 'gh_auth', 'glab', 'glab_auth'],
     skippable: false,
   },
   {
@@ -478,8 +496,19 @@ export function getStepItems(stepId: WizardStepId, items: SetupItem[]): SetupIte
 }
 
 /**
+ * Items a step displays but does not require to advance.
+ *
+ * Distinct from `OPTIONAL_ITEMS`, which is a broader "can be skipped during
+ * onboarding" notion that includes `gh_auth` — an item the Git & GitHub step
+ * genuinely does gate on. These are the ones a step offers purely as an
+ * alternative path: someone who only uses GitHub must never be blocked waiting
+ * on a GitLab CLI they will never install.
+ */
+export const STEP_OPTIONAL_ITEM_IDS = new Set(['glab', 'glab_auth']);
+
+/**
  * Check if a wizard step is complete.
- * - package-manager / git-github: all present items must be ready
+ * - package-manager / git-github: all present *required* items must be ready
  * - agent: at least one agent pair (binary + auth) must be ready
  * - hosting: always complete (placeholder)
  */
@@ -496,7 +525,7 @@ export function isWizardStepComplete(stepId: WizardStepId, items: SetupItem[]): 
     return isAtLeastOneAgentReady(items);
   }
 
-  const stepItems = getStepItems(stepId, items);
+  const stepItems = getStepItems(stepId, items).filter((i) => !STEP_OPTIONAL_ITEM_IDS.has(i.id));
   return stepItems.length > 0 && stepItems.every((i) => i.status === 'ready');
 }
 
@@ -847,6 +876,41 @@ function getLinuxTerminalCommands(): Record<string, TerminalCommand> {
   };
 }
 
+/** Official install instructions, for the platforms we can't script. */
+const GLAB_INSTALL_DOCS = 'https://gitlab.com/gitlab-org/cli#installation';
+
+/**
+ * Sign in to GitLab. `glab auth login` walks the user through choosing an
+ * instance, so a self-hosted host needs no extra flag here — which is why this
+ * is a terminal step rather than a silent one.
+ */
+const GLAB_AUTH: TerminalCommand = { command: 'glab', args: ['auth', 'login'] };
+
+/**
+ * Install the GitLab CLI on macOS/Linux.
+ *
+ * Homebrew and pacman are the two package managers that reliably carry `glab`
+ * under that name. Everywhere else this points at GitLab's own instructions
+ * rather than guessing a package name — a wrong guess fails with "no match for
+ * argument", which reads like an app bug instead of a missing package.
+ */
+const GLAB_INSTALL_UNIX: TerminalCommand = {
+  command: '/bin/bash',
+  args: [
+    '-c',
+    [
+      'echo "Installing the GitLab CLI…"',
+      'if command -v brew >/dev/null 2>&1; then brew install glab',
+      'elif command -v pacman >/dev/null 2>&1; then sudo pacman -S --needed --noconfirm glab',
+      'else',
+      `  echo "Ship Studio can't install the GitLab CLI automatically on this system." >&2`,
+      `  echo "Install it from ${GLAB_INSTALL_DOCS} then click Check again." >&2`,
+      '  exit 1',
+      'fi',
+    ].join('\n'),
+  ],
+};
+
 /** Get terminal commands based on current platform */
 export function getTerminalCommands(): Record<string, TerminalCommand> {
   const isWin = isWindows();
@@ -876,6 +940,17 @@ export function getTerminalCommands(): Record<string, TerminalCommand> {
         command: 'gh',
         args: ['auth', 'login', '--web', '--git-protocol', 'https'],
       },
+      glab: {
+        // No winget/scoop package we can name with confidence, so send the
+        // user to GitLab's own instructions rather than run an install that
+        // fails with a package-not-found error.
+        command: 'powershell',
+        args: [
+          '-Command',
+          `Write-Host "Install the GitLab CLI from ${GLAB_INSTALL_DOCS}, then click Check again." ; exit 1`,
+        ],
+      },
+      glab_auth: GLAB_AUTH,
       claude: {
         // Official native installer for Windows (mirrors the macOS install.sh
         // path). `irm | iex` downloads and runs the install script in-session;
@@ -999,6 +1074,8 @@ export function getTerminalCommands(): Record<string, TerminalCommand> {
         command: 'gh',
         args: ['auth', 'login', '--web', '--git-protocol', 'https'],
       },
+      glab: GLAB_INSTALL_UNIX,
+      glab_auth: GLAB_AUTH,
       claude: {
         // Echo first + a curl progress bar: the download must never be
         // silent, or the onboarding terminal's zero-output watchdog kills a
@@ -1090,6 +1167,10 @@ export function getUsesTerminal(): Set<string> {
     'homebrew',
     'npm_fix',
     'gh_auth',
+    // Both are interactive: installing needs sudo on some systems, and
+    // `glab auth login` prompts for the instance and sign-in method.
+    'glab',
+    'glab_auth',
     'claude',
     'claude_auth',
     'codex',

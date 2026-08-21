@@ -394,6 +394,7 @@ export function WorkspaceModals({
             )
             .map((b) => b.name)}
           aiAvailable={integrations.claude.cliStatus.installed}
+          provider={integrations.projectGithub?.provider ?? null}
           onSuccess={onSubmitReviewSuccess}
           onBranchSwitch={onSubmitReviewBranchSwitch}
           onSendToAgent={onSubmitReviewSendToAgent}

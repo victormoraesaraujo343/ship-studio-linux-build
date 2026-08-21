@@ -1,7 +1,9 @@
 /**
  * Submit for Review modal.
  *
- * Creates a pull request from the current branch.
+ * Creates a change request from the current branch — a pull request on GitHub,
+ * a merge request on GitLab; the flow is the same and only the wording differs
+ * (see `providerTerms`).
  * Supports AI-generated PR titles and descriptions via Claude CLI.
  *
  * @module components/SubmitReviewModal
@@ -27,10 +29,11 @@ import {
   isRecognizedGitFailure,
 } from '../../lib/errors';
 import { logger } from '../../lib/logger';
+import { providerTerms, type GitProvider, type ProviderTerms } from '../../lib/gitProvider';
 import { ModalFrame } from '../primitives/ModalFrame';
 import { Button } from '../primitives/Button';
 import { Spinner } from '../primitives/Spinner';
-import { GitHubIcon, WarningIcon } from '../icons';
+import { ForgeIcon, WarningIcon } from '../icons';
 import { useOptionalToast } from '../../contexts/ToastContext';
 
 interface SubmitReviewModalProps {
@@ -52,12 +55,25 @@ interface SubmitReviewModalProps {
   onResolveConflicts?: (headBranch: string, baseBranch: string) => void;
   /** Callback to close modal */
   onClose: () => void;
+  /**
+   * Forge the project's remote points at. Only affects wording — GitLab calls
+   * these merge requests. Omitted/null falls back to GitHub's vocabulary.
+   */
+  provider?: GitProvider | null;
 }
 
 type Phase = 'edit' | 'created' | 'conflict' | 'merged';
 
+/**
+ * The request's number, read back from the URL the forge returned.
+ *
+ * Each forge shapes it differently — GitHub `/pull/<n>`, GitLab
+ * `/-/merge_requests/<n>` — and the number is what the follow-up merge call
+ * needs. Recognizing only GitHub's meant a GitLab user got their merge request
+ * created and then the flow silently gave up on offering to merge it.
+ */
 function parsePrNumberFromUrl(url: string): number | null {
-  const match = url.match(/\/pull\/(\d+)/);
+  const match = url.match(/\/(?:pull|merge_requests)\/(\d+)/);
   return match ? Number(match[1]) : null;
 }
 
@@ -68,14 +84,16 @@ function sanitizeBranchName(name: string): string {
   return name.replace(/[`"'\\\n\r]/g, '');
 }
 
-function buildConflictPrompt(headBranch: string, baseBranch: string): string {
+/** The forge's own words go into the prompt too: the agent decides which CLI to
+ *  reach for from what the user says, and "merge request" points it at GitLab. */
+function buildConflictPrompt(headBranch: string, baseBranch: string, terms: ProviderTerms): string {
   const head = sanitizeBranchName(headBranch);
   const base = sanitizeBranchName(baseBranch);
-  return `My pull request from "${head}" into "${base}" has merge conflicts. Please help me:
+  return `My ${terms.changeRequest} from "${head}" into "${base}" has merge conflicts. Please help me:
 1. Check out "${head}" and pull the latest "${base}"
 2. Identify which files have conflicts
 3. Resolve the conflicts, prioritising the changes from "${head}" unless context suggests otherwise
-4. Commit the resolution and push so the PR can be merged`;
+4. Commit the resolution and push so the ${terms.abbrev} can be merged`;
 }
 
 export function SubmitReviewModal({
@@ -88,7 +106,11 @@ export function SubmitReviewModal({
   onSendToAgent,
   onResolveConflicts,
   onClose,
+  provider,
 }: SubmitReviewModalProps) {
+  const terms = providerTerms(provider);
+  /** Submit button's resting label, and what the progress label resets to. */
+  const createLabel = `Create ${terms.changeRequestTitle}`;
   const { showToast } = useOptionalToast();
   const onToast = (message: string, type?: 'success' | 'error' | 'info') =>
     showToast(message, type);
@@ -110,7 +132,7 @@ export function SubmitReviewModal({
   }, [projectPath, baseBranches.join(',')]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   // Progress label shown on the submit button as it works through its steps.
-  const [progressLabel, setProgressLabel] = useState('Create Pull Request');
+  const [progressLabel, setProgressLabel] = useState(createLabel);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>('edit');
   const [createdPr, setCreatedPr] = useState<{ url: string; number: number } | null>(null);
@@ -142,7 +164,10 @@ export function SubmitReviewModal({
       } catch (e) {
         trackError('submit_review_autocommit', e, 'Submit Review');
         setError(humanizeGitError(e, { branch: branchName, base: baseBranch }));
-        onToast?.("Couldn't save your latest changes — the pull request wasn't created", 'error');
+        onToast?.(
+          `Couldn't save your latest changes — the ${terms.changeRequest} wasn't created`,
+          'error'
+        );
         return;
       }
 
@@ -160,8 +185,8 @@ export function SubmitReviewModal({
         }
       }
 
-      // 3. Open the pull request.
-      setProgressLabel('Opening pull request...');
+      // 3. Open the change request.
+      setProgressLabel(`Opening ${terms.changeRequest}...`);
       const prUrl = await createPullRequest(
         projectPath,
         prTitle,
@@ -182,12 +207,15 @@ export function SubmitReviewModal({
         setPhase('created');
       } else {
         logger.warn(
-          '[SubmitReview] Created PR URL did not match /pull/<n>; skipping merge prompt',
+          '[SubmitReview] Created request URL carried no recognizable number; skipping merge prompt',
           {
             url: prUrl,
           }
         );
-        onToast?.('Pull request created (could not parse number for merge prompt)', 'success');
+        onToast?.(
+          `${terms.changeRequestSentence} created (could not parse number for merge prompt)`,
+          'success'
+        );
         onClose();
       }
     } catch (e) {
@@ -205,11 +233,11 @@ export function SubmitReviewModal({
         });
         onToast?.(humanized, 'info');
       } else {
-        onToast?.('Failed to create pull request', 'error');
+        onToast?.(`Failed to create ${terms.changeRequest}`, 'error');
       }
     } finally {
       setIsSubmitting(false);
-      setProgressLabel('Create Pull Request');
+      setProgressLabel(createLabel);
     }
   };
 
@@ -225,7 +253,7 @@ export function SubmitReviewModal({
         from_submit_modal: true,
         $screen_name: 'Submit Review',
       });
-      onToast?.('Pull request merged', 'success');
+      onToast?.(`${terms.changeRequestSentence} merged`, 'success');
       setPhase('merged');
     } catch (e) {
       trackError('pr_merge', e, 'Submit Review');
@@ -244,7 +272,7 @@ export function SubmitReviewModal({
 
   const handleAskAgentToResolve = () => {
     if (!onSendToAgent) return;
-    onSendToAgent(buildConflictPrompt(branchName, baseBranch));
+    onSendToAgent(buildConflictPrompt(branchName, baseBranch, terms));
     void trackEvent('pr_conflict_sent_to_agent', {
       head_ref: branchName,
       base_ref: baseBranch,
@@ -302,12 +330,12 @@ export function SubmitReviewModal({
         isOpen
         onClose={onClose}
         dismissable={!isBusy}
-        title="Pull request created"
+        title={`${terms.changeRequestSentence} created`}
         className="post-merge-content"
       >
         <div className="post-merge-body">
           <p>
-            Your pull request was created. Want to merge <strong>{branchName}</strong> into{' '}
+            Your {terms.changeRequest} was created. Want to merge <strong>{branchName}</strong> into{' '}
             <strong>{baseBranch}</strong> now?
           </p>
           <button
@@ -315,8 +343,8 @@ export function SubmitReviewModal({
             className="post-merge-link"
             onClick={() => void openUrl(createdPr.url)}
           >
-            <GitHubIcon size={14} />
-            View on GitHub
+            <ForgeIcon provider={provider} size={14} />
+            View on {terms.name}
           </button>
           {error && <div className="submit-review-error">{error}</div>}
         </div>
@@ -445,8 +473,8 @@ export function SubmitReviewModal({
           ) : (
             <p className="submit-review-explainer">
               When you create this, Ship Studio saves your changes, writes a short summary of them,
-              and opens a pull request into <strong>{baseBranch}</strong> for your team to review
-              and merge.
+              and opens a {terms.changeRequest} into <strong>{baseBranch}</strong> for your team to
+              review and merge.
             </p>
           )}
         </div>
@@ -462,7 +490,7 @@ export function SubmitReviewModal({
                 {progressLabel}
               </>
             ) : (
-              'Create Pull Request'
+              createLabel
             )}
           </Button>
         </div>

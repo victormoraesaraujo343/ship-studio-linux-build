@@ -147,3 +147,117 @@ describe('SubmitReviewModal — expected-refusal toast routing (#538)', () => {
     expect(await screen.findByText(/some completely novel gh failure/)).toBeInTheDocument();
   });
 });
+
+describe('SubmitReviewModal — provider vocabulary', () => {
+  const props = {
+    projectPath: '/path/to/project',
+    branchName: 'victor/pricing',
+    baseBranches: ['main'],
+    aiAvailable: false,
+    onSuccess: vi.fn(),
+    onClose: vi.fn(),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getDefaultBaseBranch).mockResolvedValue(null);
+  });
+
+  it('calls it a merge request on GitLab', () => {
+    render(<SubmitReviewModal {...props} provider="gitlab" />);
+
+    expect(screen.getByRole('button', { name: 'Create Merge Request' })).toBeInTheDocument();
+    expect(screen.getByText(/opens a merge request into/)).toBeInTheDocument();
+    expect(screen.queryByText(/pull request/i)).not.toBeInTheDocument();
+  });
+
+  it('calls it a pull request on GitHub', () => {
+    render(<SubmitReviewModal {...props} provider="github" />);
+
+    expect(screen.getByRole('button', { name: 'Create Pull Request' })).toBeInTheDocument();
+    expect(screen.getByText(/opens a pull request into/)).toBeInTheDocument();
+    expect(screen.queryByText(/merge request/i)).not.toBeInTheDocument();
+  });
+
+  it('falls back to GitHub wording when the provider is unknown', () => {
+    // Provider omitted (still loading / no remote to identify) and explicitly
+    // null must both read as GitHub — the app's own fallback forge.
+    const { unmount } = render(<SubmitReviewModal {...props} />);
+    expect(screen.getByRole('button', { name: 'Create Pull Request' })).toBeInTheDocument();
+    unmount();
+
+    render(<SubmitReviewModal {...props} provider={null} />);
+    expect(screen.getByRole('button', { name: 'Create Pull Request' })).toBeInTheDocument();
+  });
+
+  it('uses the forge’s term in the failure toast too', async () => {
+    vi.mocked(createPullRequest).mockRejectedValue({
+      type: 'Other',
+      message: 'some completely novel glab failure',
+    });
+
+    const { showToast } = renderWithToasts(<SubmitReviewModal {...props} provider="gitlab" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create Merge Request' }));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith('Failed to create merge request', 'error')
+    );
+  });
+});
+
+describe('SubmitReviewModal — reading the number back from the created URL', () => {
+  const props = {
+    projectPath: '/path/to/project',
+    branchName: 'victor/pricing',
+    baseBranches: ['main'],
+    aiAvailable: false,
+    onSuccess: vi.fn(),
+    onClose: vi.fn(),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getDefaultBaseBranch).mockResolvedValue(null);
+  });
+
+  /**
+   * The number drives the follow-up merge offer. GitLab shapes its URL as
+   * `/-/merge_requests/<n>`, and only GitHub's `/pull/<n>` used to be
+   * recognized — so a GitLab user's merge request was created and then the
+   * flow quietly gave up on offering to merge it.
+   */
+  it('offers the merge step for a GitLab merge request URL', async () => {
+    vi.mocked(createPullRequest).mockResolvedValue(
+      'https://gitlab.acme.com/group/sub/proj/-/merge_requests/42'
+    );
+
+    render(<SubmitReviewModal {...props} provider="gitlab" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create Merge Request' }));
+
+    expect(await screen.findByText('Merge request created')).toBeInTheDocument();
+  });
+
+  it('still offers it for a GitHub pull request URL', async () => {
+    vi.mocked(createPullRequest).mockResolvedValue('https://github.com/owner/repo/pull/7');
+
+    render(<SubmitReviewModal {...props} provider="github" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create Pull Request' }));
+
+    expect(await screen.findByText('Pull request created')).toBeInTheDocument();
+  });
+
+  /// A URL with no number must still degrade gracefully rather than throw.
+  it('falls back to a toast when the URL carries no number', async () => {
+    vi.mocked(createPullRequest).mockResolvedValue('https://gitlab.acme.com/group/proj');
+
+    const { showToast } = renderWithToasts(<SubmitReviewModal {...props} provider="gitlab" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create Merge Request' }));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.stringContaining('Merge request created'),
+        'success'
+      )
+    );
+  });
+});

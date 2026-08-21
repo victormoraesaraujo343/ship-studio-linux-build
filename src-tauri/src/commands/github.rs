@@ -4,6 +4,9 @@
 
 use crate::cache::TtlCache;
 use crate::commands::git::git_stage_and_commit;
+use crate::commands::git_provider::{
+    detect_provider_for_host, parse_remote_url, project_provider, GitProvider,
+};
 use crate::errors::CommandError;
 use crate::external_command::{run_with_timeout, truncate_output};
 use crate::types::{
@@ -199,6 +202,21 @@ const GH_TIMEOUT_MESSAGE: &str =
 #[tauri::command]
 #[tracing::instrument]
 pub async fn get_github_username(project_path: Option<String>) -> Result<String, CommandError> {
+    // On a GitLab project this must be the GitLab identity: the UI marks the
+    // user's own requests by comparing against it, so a GitHub username here
+    // would highlight the wrong rows. Only possible when scoped to a project —
+    // without one there is no remote to identify a forge from.
+    if let Some(path) = project_path.as_deref() {
+        if matches!(project_provider(path).await, Ok(Some(GitProvider::GitLab))) {
+            let project = validate_project_path(path)?;
+            // Not cached: GITHUB_USERNAME_CACHE is keyed by workspace account,
+            // and glab has no per-workspace isolation to key on (see the
+            // gitlab module's header), so a shared cache would let one
+            // project's GitLab identity leak into another's.
+            return crate::commands::gitlab::get_gitlab_username(&project).await;
+        }
+    }
+
     let (mut cmd, account_id) = gh_command_and_account(project_path.as_deref())?;
 
     if let Some(cached) = GITHUB_USERNAME_CACHE.get(&account_id) {
@@ -262,21 +280,25 @@ pub async fn get_github_orgs(project_path: Option<String>) -> Result<Vec<String>
 #[tauri::command]
 #[tracing::instrument(fields(project = %project_path))]
 pub async fn get_project_github_status(project_path: String) -> ProjectGitHubStatus {
-    let not_a_repo = ProjectGitHubStatus {
-        status: "not-a-repo".to_string(),
+    // Built fresh at each exit rather than shared, because `provider` differs
+    // between them: "not a repo" has no forge to name, while a remote we could
+    // read but not verify still knows which forge it belongs to.
+    let unlinked = |status: &str, provider: Option<GitProvider>| ProjectGitHubStatus {
+        status: status.to_string(),
         github_repo: None,
         github_url: None,
+        provider,
     };
 
     // Validate path
     let project = match validate_project_path(&project_path) {
         Ok(p) => p,
-        Err(_) => return not_a_repo,
+        Err(_) => return unlinked("not-a-repo", None),
     };
 
     // Check if .git exists
     if !project.join(".git").exists() {
-        return not_a_repo;
+        return unlinked("not-a-repo", None);
     }
 
     let total_start = std::time::Instant::now();
@@ -285,7 +307,7 @@ pub async fn get_project_github_status(project_path: String) -> ProjectGitHubSta
     // Get remote URL (with timeout)
     let step_start = std::time::Instant::now();
     let Ok(mut remote_cmd) = crate::utils::git_command_in(&project) else {
-        return not_a_repo;
+        return unlinked("not-a-repo", None);
     };
     remote_cmd
         .args(["remote", "get-url", "origin"])
@@ -306,80 +328,87 @@ pub async fn get_project_github_status(project_path: String) -> ProjectGitHubSta
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             debug!(elapsed_ms = step_start.elapsed().as_millis() as u64, stderr = %stderr, "git remote get-url origin: no remote configured");
-            return ProjectGitHubStatus {
-                status: "no-remote".to_string(),
-                github_repo: None,
-                github_url: None,
-            };
+            return unlinked("no-remote", None);
         }
         Err(e) => {
             warn!(elapsed_ms = step_start.elapsed().as_millis() as u64, error = %e, "git remote get-url origin failed/timed out");
-            return ProjectGitHubStatus {
-                status: "no-remote".to_string(),
-                github_repo: None,
-                github_url: None,
-            };
+            return unlinked("no-remote", None);
         }
     };
 
-    // Parse GitHub repo from remote URL (handles HTTPS and SSH)
-    let github_repo = parse_github_repo(&remote_url);
-    let github_repo = match github_repo {
-        Some(repo) => repo,
-        None => {
-            debug!(remote_url = %remote_url, "Could not parse GitHub repo from remote URL");
-            return ProjectGitHubStatus {
-                status: "no-remote".to_string(),
-                github_repo: None,
-                github_url: None,
-            };
-        }
+    // Parse the remote properly (host + path, every URL form git accepts) and
+    // resolve which forge it belongs to. The old path searched the raw string
+    // for "github.com/", which could not see a GitLab or self-hosted remote at
+    // all — those projects all reported "no-remote".
+    let Some(remote) = parse_remote_url(&remote_url) else {
+        debug!(remote_url = %remote_url, "Could not parse a host and path out of the remote URL");
+        return unlinked("no-remote", None);
     };
+    let provider = detect_provider_for_host(&remote.host).await;
+    let repo_path = remote.path.clone();
 
-    // Verify repo exists on GitHub using gh CLI (with timeout). Scope to the
-    // project's workspace so a repo private to that workspace's GitHub login
-    // resolves correctly even when another workspace is globally active.
+    // Verify the project exists and we can see it, using the forge's own CLI.
+    // Scope to the project's workspace so a repo private to that workspace's
+    // login resolves correctly even when another workspace is globally active.
     let step_start = std::time::Instant::now();
-    debug!(github_repo = %github_repo, "Running gh repo view");
-    let mut gh_cmd = get_gh_command_for_project(&project);
-    gh_cmd
-        .args(["repo", "view", &github_repo, "--json", "url"])
-        .current_dir(&project);
+    debug!(repo = %repo_path, provider = ?provider, "Verifying project with the forge CLI");
 
-    let result = match run_command_with_timeout(gh_cmd, "gh repo view", GITHUB_CLI_TIMEOUT_SECS)
-        .await
-    {
+    let (mut cli_cmd, label) = match provider {
+        GitProvider::GitHub => {
+            let mut cmd = get_gh_command_for_project(&project);
+            cmd.args(["repo", "view", &repo_path, "--json", "url"]);
+            (cmd, "gh repo view")
+        }
+        GitProvider::GitLab => {
+            let mut cmd = crate::commands::gitlab::glab_command_for_project(&project);
+            cmd.args(["repo", "view", &repo_path, "--output", "json"]);
+            (cmd, "glab repo view")
+        }
+    };
+    cli_cmd.current_dir(&project);
+
+    let result = match run_command_with_timeout(cli_cmd, label, GITHUB_CLI_TIMEOUT_SECS).await {
         Ok(output) if output.status.success() => {
-            debug!(elapsed_ms = step_start.elapsed().as_millis() as u64, github_repo = %github_repo, "gh repo view completed successfully");
-            // Parse the URL from JSON response
+            debug!(elapsed_ms = step_start.elapsed().as_millis() as u64, repo = %repo_path, "{label} completed successfully");
             let json_str = String::from_utf8_lossy(&output.stdout);
+            // gh reports the project's address as `url`, GitLab's API as
+            // `web_url`. Read whichever is present rather than assembling one:
+            // a self-hosted instance can serve pages from a different host than
+            // the git remote, so a constructed link could point nowhere.
             let url = serde_json::from_str::<serde_json::Value>(&json_str)
                 .ok()
-                .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(|s| s.to_string()))
-                .unwrap_or_else(|| format!("https://github.com/{github_repo}"));
+                .and_then(|v| {
+                    v.get("url")
+                        .or_else(|| v.get("web_url"))
+                        .and_then(|u| u.as_str())
+                        .map(str::to_string)
+                });
 
-            ProjectGitHubStatus {
-                status: "connected".to_string(),
-                github_repo: Some(github_repo),
-                github_url: Some(url),
+            match url {
+                Some(url) => ProjectGitHubStatus {
+                    status: "connected".to_string(),
+                    github_repo: Some(repo_path),
+                    github_url: Some(url),
+                    provider: Some(provider),
+                },
+                // Verified, but the CLI didn't tell us the address. Report the
+                // connection honestly with no link rather than inventing one.
+                None => ProjectGitHubStatus {
+                    status: "connected".to_string(),
+                    github_repo: Some(repo_path),
+                    github_url: None,
+                    provider: Some(provider),
+                },
             }
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            debug!(elapsed_ms = step_start.elapsed().as_millis() as u64, stderr = %stderr, "gh repo view: repo not found or no access");
-            ProjectGitHubStatus {
-                status: "no-remote".to_string(),
-                github_repo: None,
-                github_url: None,
-            }
+            debug!(elapsed_ms = step_start.elapsed().as_millis() as u64, stderr = %stderr, "{label}: project not found or no access");
+            unlinked("no-remote", Some(provider))
         }
         Err(e) => {
-            warn!(elapsed_ms = step_start.elapsed().as_millis() as u64, error = %e, "gh repo view failed/timed out");
-            ProjectGitHubStatus {
-                status: "no-remote".to_string(),
-                github_repo: None,
-                github_url: None,
-            }
+            warn!(elapsed_ms = step_start.elapsed().as_millis() as u64, error = %e, "{label} failed/timed out");
+            unlinked("no-remote", Some(provider))
         }
     };
 

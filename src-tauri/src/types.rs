@@ -361,15 +361,20 @@ pub struct GitHubCliStatus {
     pub authenticated: bool,
 }
 
-/// GitHub connection status - verified against GitHub API
+/// Forge connection status - verified against the provider's API
 #[derive(Serialize)]
 pub struct ProjectGitHubStatus {
     /// "not-a-repo" | "no-remote" | "connected"
     pub status: String,
-    /// e.g., "username/repo-name" - only set if connected
+    /// e.g., "username/repo-name" - only set if connected. On GitLab this can
+    /// be a nested group path ("group/subgroup/project").
     pub github_repo: Option<String>,
     /// e.g., "https://github.com/username/repo-name" - only set if connected
     pub github_url: Option<String>,
+    /// Which forge the remote points at ("github" | "gitlab"), or `None` when
+    /// there is no remote to identify. The UI reads this to name things the
+    /// way the forge does — GitLab has merge requests, not pull requests.
+    pub provider: Option<crate::commands::git_provider::GitProvider>,
 }
 
 #[derive(Deserialize)]

@@ -1,12 +1,39 @@
 //! # Pull Request Commands
 //!
-//! Commands for managing GitHub pull requests.
+//! Commands for managing change requests — GitHub pull requests and GitLab
+//! merge requests alike.
+//!
+//! Each command resolves the project's forge from its git remote and dispatches
+//! to the matching CLI: `gh` here, or [`crate::commands::gitlab`] for `glab`.
+//! Both return the same `PullRequestInfo`, so the frontend keeps one set of
+//! Tauri commands and one rendering path — only the labels differ.
+//!
+//! A project whose provider can't be resolved falls through to GitHub, which is
+//! how every project behaved before GitLab support existed.
 
+use crate::commands::git_provider::{project_provider, GitProvider};
 use crate::commands::github::get_gh_command_for_project;
+use crate::commands::gitlab;
 use crate::errors::CommandError;
 use crate::external_command::{run_with_timeout, truncate_output};
 use crate::types::PullRequestInfo;
 use crate::utils::validate_project_path;
+
+/// The forge this project's remote points at.
+///
+/// Detection failures degrade to GitHub rather than surfacing an error: a
+/// project with no remote yet still needs these commands to behave as they
+/// always have.
+async fn provider_for(project_path: &str) -> GitProvider {
+    match project_provider(project_path).await {
+        Ok(Some(provider)) => provider,
+        Ok(None) => GitProvider::GitHub,
+        Err(err) => {
+            tracing::debug!("could not resolve git provider, assuming GitHub: {err}");
+            GitProvider::GitHub
+        }
+    }
+}
 
 /// Timeout for network-facing CLI ops (gh/git) so a hung remote can't freeze a
 /// PR command. Matches git/branches.rs.
@@ -26,13 +53,17 @@ async fn run_net(
     .await
 }
 
-/// List pull requests for the repository
+/// List open change requests for the repository.
 #[tauri::command]
 #[tracing::instrument(skip(project_path), fields(project = %project_path))]
 pub async fn list_pull_requests(
     project_path: String,
 ) -> Result<Vec<PullRequestInfo>, CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+
+    if provider_for(&project_path).await == GitProvider::GitLab {
+        return gitlab::list_merge_requests(&validated_path).await;
+    }
 
     let mut cmd = get_gh_command_for_project(&validated_path);
     cmd.args([
@@ -185,6 +216,11 @@ pub async fn create_pull_request(
         }
     }
 
+    // The push above is provider-agnostic; only the request itself differs.
+    if provider_for(&project_path).await == GitProvider::GitLab {
+        return gitlab::create_merge_request(&validated_path, &title, body.as_deref(), &base).await;
+    }
+
     let body_str = body.unwrap_or_default();
     let args = vec![
         "pr", "create", "--title", &title, "--body", &body_str, "--base", &base,
@@ -230,6 +266,10 @@ pub async fn create_pull_request(
 #[tracing::instrument(skip(project_path), fields(project = %project_path, pr = pr_number))]
 pub async fn merge_pull_request(project_path: String, pr_number: i32) -> Result<(), CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+
+    if provider_for(&project_path).await == GitProvider::GitLab {
+        return gitlab::merge_merge_request(&validated_path, pr_number).await;
+    }
 
     let mut cmd = get_gh_command_for_project(&validated_path);
     cmd.args(["pr", "merge", &pr_number.to_string(), "--merge"])
@@ -282,6 +322,10 @@ pub async fn checkout_pull_request(
 ) -> Result<String, CommandError> {
     let validated_path = validate_project_path(&project_path)?;
 
+    if provider_for(&project_path).await == GitProvider::GitLab {
+        return gitlab::checkout_merge_request(&validated_path, pr_number).await;
+    }
+
     let mut cmd = get_gh_command_for_project(&validated_path);
     cmd.args(["pr", "checkout", &pr_number.to_string()])
         .current_dir(&validated_path);
@@ -330,6 +374,10 @@ pub async fn checkout_pull_request(
 #[tracing::instrument(skip(project_path), fields(project = %project_path, pr = pr_number))]
 pub async fn close_pull_request(project_path: String, pr_number: i32) -> Result<(), CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+
+    if provider_for(&project_path).await == GitProvider::GitLab {
+        return gitlab::close_merge_request(&validated_path, pr_number).await;
+    }
 
     let mut cmd = get_gh_command_for_project(&validated_path);
     cmd.args(["pr", "close", &pr_number.to_string()])

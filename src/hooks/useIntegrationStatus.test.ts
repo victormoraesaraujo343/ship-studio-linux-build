@@ -276,6 +276,7 @@ describe('useIntegrationStatus', () => {
         status: 'connected' as const,
         github_repo: 'user/repo',
         github_url: 'https://github.com/user/repo',
+        provider: 'github' as const,
       };
       vi.mocked(github.getProjectGitHubStatus).mockResolvedValue(projectStatus);
 
@@ -297,6 +298,7 @@ describe('useIntegrationStatus', () => {
         status: 'connected' as const,
         github_repo: 'org/repo',
         github_url: 'https://github.com/org/repo',
+        provider: 'github' as const,
       };
 
       act(() => {
@@ -314,6 +316,7 @@ describe('useIntegrationStatus', () => {
           status: 'connected',
           github_repo: 'org/repo',
           github_url: 'https://github.com/org/repo',
+          provider: 'github',
         });
       });
 

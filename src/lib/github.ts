@@ -14,6 +14,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
+import type { GitProvider } from './gitProvider';
+
 /** GitHub CLI installation and authentication status */
 export interface GitHubCliStatus {
   /** Whether gh CLI is installed */
@@ -22,14 +24,23 @@ export interface GitHubCliStatus {
   authenticated: boolean;
 }
 
-/** Project's GitHub repository connection status */
+/** Project's forge repository connection status */
 export interface ProjectGitHubStatus {
   /** Connection state */
   status: 'not-a-repo' | 'no-remote' | 'connected';
-  /** Repository identifier (e.g., "username/repo-name") - only set if connected */
+  /**
+   * Repository identifier (e.g., "username/repo-name") - only set if connected.
+   * On GitLab this can be a nested group path ("group/subgroup/project").
+   */
   github_repo: string | null;
   /** Full repository URL (e.g., "https://github.com/username/repo-name") - only set if connected */
   github_url: string | null;
+  /**
+   * Which forge the remote points at, or null when there is no remote to
+   * identify. Pass to `providerTerms` (lib/gitProvider) so labels use the
+   * forge's own vocabulary — GitLab has merge requests, not pull requests.
+   */
+  provider: GitProvider | null;
 }
 
 /**

@@ -123,6 +123,9 @@ export function BranchPRTabContainer({
               // TODO: Chain off handleBranchSwitch promise instead of arbitrary timeout — branch switch may take longer or shorter than 1.5s
               setTimeout(() => void handleRestartDevServer(), 1500);
             }}
+            // Labels follow the forge the remote points at (merge requests on
+            // GitLab); null while the status is still loading → GitHub wording.
+            provider={integrations.projectGithub?.provider ?? null}
             onNavigateToBranches={() => setWorkspaceTab('branches')}
             onResolveConflicts={(headBranch, baseBranch) =>
               void handleResolveConflicts(headBranch, baseBranch)

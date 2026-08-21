@@ -151,11 +151,14 @@ export interface UseIntegrationStatusReturn {
   fetchProjectGitHubStatus: (projectPath: string) => Promise<ProjectGitHubStatus>;
 }
 
-/** Fallback GitHub status when check fails */
+/** Fallback forge status when the check fails */
 export const GITHUB_STATUS_FALLBACK: ProjectGitHubStatus = {
   status: 'no-remote',
   github_repo: null,
   github_url: null,
+  // A failed check tells us nothing about the forge, so claim nothing —
+  // `providerTerms` falls back to GitHub wording for null.
+  provider: null,
 };
 
 /**
