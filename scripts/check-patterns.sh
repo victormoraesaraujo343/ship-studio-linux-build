@@ -135,6 +135,34 @@ done
 rule "modal files use ModalFrame primitive" $MISSING_MODAL_FRAME
 echo
 
+# 6. Hard-coded user shells in PTY spawns / env.
+#
+# Two distinct things live in these files and only one is a bug:
+#   - `command: '/bin/bash'` running a bash *script* is fine and portable.
+#     bash exists on every macOS and mainstream Linux install, and those
+#     scripts are written in bash syntax on purpose.
+#   - Naming the user's *interactive* shell is not. A literal /bin/zsh is
+#     wrong on every Linux machine without zsh: the PTY warns "$SHELL not
+#     executable" and falls back, tools spawned inside read $SHELL to decide
+#     how to re-invoke themselves, and spawning the binary outright fails.
+#
+# So: any `SHELL:` env assignment must come from getUserShell() (lib/agent),
+# and /bin/zsh must never be spawned as a command. The per-platform fallback
+# constant in lib/agent.ts is the one place allowed to name a shell.
+echo "Checking for hard-coded user shells in PTY spawns…"
+HARDCODED_SHELL=$(grep -rnE "SHELL:[[:space:]]*'/|command:[[:space:]]*'/bin/zsh'" src \
+  --include='*.ts' --include='*.tsx' 2>/dev/null \
+  | grep -v 'src/lib/agent.ts' \
+  | grep -v '\.test\.' || true)
+if [ -n "$HARDCODED_SHELL" ]; then
+  echo "  Offenders (use getUserShell() from lib/agent instead):"
+  echo "$HARDCODED_SHELL" | sed 's/^/    /'
+  rule "hard-coded user shells" 1
+else
+  rule "hard-coded user shells" 0
+fi
+echo
+
 if [ $FAIL -ne 0 ]; then
   echo "==> FAIL: some pattern rules violated. See CLAUDE.md → How to Do Things."
   exit 1

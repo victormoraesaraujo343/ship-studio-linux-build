@@ -18,6 +18,7 @@ import { readProjectFile } from './code';
 import { asCommandError, formatCommandError } from './errors';
 import { trackError } from './analytics';
 import { isWindows } from './setup';
+import { getUserShell } from './agent';
 
 /** Basic project information */
 export interface Project {
@@ -461,7 +462,8 @@ export async function startDevServer(
         USER: homeNormalized.split('/').filter(Boolean).pop() || 'user',
         TERM: 'xterm-256color',
         LANG: 'en_US.UTF-8',
-        SHELL: '/bin/zsh',
+        // The user's own shell; /bin/zsh does not exist on most Linux boxes.
+        SHELL: await getUserShell(),
         PORT: port.toString(),
         NUXT_TELEMETRY_DISABLED: '1',
       };

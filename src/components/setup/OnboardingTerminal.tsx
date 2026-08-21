@@ -22,6 +22,7 @@ import { createPtyChunkDecoder, toPtyBytes, type PtyChunk } from '../../lib/term
 import { logger } from '../../lib/logger';
 import { asCommandError, formatCommandError } from '../../lib/errors';
 import '@xterm/xterm/css/xterm.css';
+import { getUserShell } from '../../lib/agent';
 
 /**
  * Maximum characters of raw PTY output retained for exit diagnostics.
@@ -286,7 +287,9 @@ export function OnboardingTerminal({ command, args, cwd, onExit }: OnboardingTer
             USER: homeNormalized.split('/').filter(Boolean).pop() || 'user',
             TERM: 'xterm-256color',
             LANG: 'en_US.UTF-8',
-            SHELL: '/bin/zsh',
+            // The user's own shell — this PTY runs the setup install commands,
+            // so a shell that doesn't exist on the machine is not survivable.
+            SHELL: await getUserShell(),
           };
 
           spawnCmd = command;

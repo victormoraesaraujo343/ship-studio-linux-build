@@ -657,7 +657,11 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
             USER: homeNormalized.split('/').filter(Boolean).pop() || 'user',
             TERM: 'xterm-256color',
             LANG: 'en_US.UTF-8',
-            SHELL: '/bin/zsh',
+            // The user's own shell. A hard-coded /bin/zsh made the PTY warn
+            // "not executable" and fall back on every Linux machine without
+            // zsh, and tools spawned inside read $SHELL to re-invoke
+            // themselves.
+            SHELL: await getUserShell(),
           };
         }
         // Per-workspace isolation vars (CLAUDE_CONFIG_DIR, GH_CONFIG_DIR,

@@ -38,6 +38,7 @@ import { loadNerdFonts } from '../../lib/fonts';
 import { logger } from '../../lib/logger';
 import { asCommandError, formatCommandError } from '../../lib/errors';
 import '@xterm/xterm/css/xterm.css';
+import { getUserShell } from '../../lib/agent';
 
 interface BuildTerminalProps {
   /** Stable pty_session id — use `buildSessionId(projectPath)` so it matches the
@@ -58,10 +59,12 @@ interface BuildTerminalProps {
   onOutput?: (text: string) => void;
 }
 
-// iOS previews are macOS-only; a login+interactive shell sources the user's
-// profile so `npx` / `xcrun` / nvm-managed node resolve exactly as in their
-// terminal (PATH parity with how the dev server used to launch the build).
-const BUILD_SHELL = '/bin/zsh';
+// A login+interactive shell sources the user's profile so `npx` / `xcrun` /
+// nvm-managed node resolve exactly as in their terminal (PATH parity with how
+// the dev server used to launch the build). iOS previews are macOS-only, but
+// the Android path is not — and `/bin/zsh` frequently does not exist on Linux,
+// where spawning it fails outright. Resolved from the user's own $SHELL; both
+// bash and zsh take `-lic`.
 
 export function BuildTerminal({
   sessionId,
@@ -175,7 +178,7 @@ export function BuildTerminal({
       try {
         await openPtySession({
           sessionId,
-          command: BUILD_SHELL,
+          command: await getUserShell(),
           args: ['-lic', command],
           cwd,
           env: {},
