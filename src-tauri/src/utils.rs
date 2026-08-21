@@ -59,6 +59,38 @@ pub fn get_extended_path() -> String {
     result
 }
 
+/// The shell to fall back to when `$SHELL` is unset or unusable.
+///
+/// Platform-specific because the guarantee differs: zsh is the macOS default
+/// and always present, but on Linux it is frequently not installed at all —
+/// hard-coding `/bin/zsh` there yields a Terminal tab that cannot spawn. bash
+/// is the shell every mainstream distro actually ships.
+#[cfg(not(windows))]
+pub fn fallback_shell() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "/bin/bash"
+    } else {
+        "/bin/zsh"
+    }
+}
+
+/// The user's login shell as an absolute path.
+///
+/// Prefers `$SHELL`, but only when it points at a file that actually exists —
+/// a stale entry (a shell uninstalled since the account was created) would
+/// otherwise produce spawn failures that look like app bugs. Falls back to
+/// [`fallback_shell`].
+#[cfg(not(windows))]
+pub fn get_user_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| {
+            let p = std::path::Path::new(s);
+            p.is_absolute() && p.is_file()
+        })
+        .unwrap_or_else(|| fallback_shell().to_string())
+}
+
 /// Query the user's login shell for its PATH so we detect tools installed by
 /// any version manager (nvm, volta, fnm, asdf, …) exactly the way their terminal
 /// sees them. A macOS app launched from Finder does NOT inherit this PATH.
@@ -71,7 +103,7 @@ fn get_login_shell_path() -> Option<String> {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let shell = get_user_shell();
 
     // -l (login) + -i (interactive) so the shell sources the rc files that set up
     // version managers (nvm/fnm/asdf typically live in the interactive rc). A
@@ -1435,13 +1467,131 @@ pub fn check_homebrew() -> (bool, Option<String>) {
     (false, None)
 }
 
-/// Get Homebrew command path
+/// Get Homebrew command path.
+///
+/// Checks the canonical prefix for each platform — Apple Silicon
+/// (`/opt/homebrew`), Intel macOS (`/usr/local`), and on Linux the Homebrew-on-
+/// Linux prefixes (`/home/linuxbrew/.linuxbrew`, or a single-user `~/.linuxbrew`
+/// install) — then falls back to a PATH lookup for nonstandard prefixes.
+///
+/// The Linux prefixes matter: without them a Linux machine that *does* have
+/// Homebrew reports "Package Manager: not installed" in onboarding and every
+/// brew-backed install fails, because neither macOS prefix exists there.
 pub fn get_brew_command() -> Option<std::path::PathBuf> {
-    let paths = [
+    #[allow(unused_mut)]
+    let mut paths = vec![
         std::path::PathBuf::from("/opt/homebrew/bin/brew"),
         std::path::PathBuf::from("/usr/local/bin/brew"),
     ];
-    paths.into_iter().find(|p| p.exists())
+
+    #[cfg(target_os = "linux")]
+    {
+        paths.push(std::path::PathBuf::from(
+            "/home/linuxbrew/.linuxbrew/bin/brew",
+        ));
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".linuxbrew/bin/brew"));
+        }
+    }
+
+    paths
+        .into_iter()
+        .find(|p| p.exists())
+        .or_else(|| which::which("brew").ok())
+}
+
+/// A Linux distribution's system package manager.
+///
+/// Linux has no single package manager to hard-code the way macOS has Homebrew
+/// and Windows has Winget, so onboarding detects whichever one the distro ships
+/// and drives that. Unlike Homebrew, these all need root to install, which is
+/// why the frontend routes Linux installs through the interactive terminal
+/// (where `sudo` can actually prompt) instead of the silent backend command.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxPackageManager {
+    /// Debian, Ubuntu, Zorin, Mint, Pop!_OS …
+    Apt,
+    /// Fedora, RHEL, Rocky, Alma …
+    Dnf,
+    /// Arch, Manjaro, EndeavourOS …
+    Pacman,
+    /// openSUSE, SLES
+    Zypper,
+    /// Alpine
+    Apk,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxPackageManager {
+    /// The binary to look for on PATH.
+    pub fn binary(self) -> &'static str {
+        match self {
+            Self::Apt => "apt-get",
+            Self::Dnf => "dnf",
+            Self::Pacman => "pacman",
+            Self::Zypper => "zypper",
+            Self::Apk => "apk",
+        }
+    }
+
+    /// Human-facing name, shown as the Package Manager item's friendly name.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Apt => "APT",
+            Self::Dnf => "DNF",
+            Self::Pacman => "pacman",
+            Self::Zypper => "zypper",
+            Self::Apk => "apk",
+        }
+    }
+
+    /// Every manager we know how to detect, most-common first.
+    pub const ALL: &'static [Self] = &[Self::Apt, Self::Dnf, Self::Pacman, Self::Zypper, Self::Apk];
+}
+
+/// Detect the system package manager this Linux machine ships with.
+///
+/// Returns the first match in [`LinuxPackageManager::ALL`] order. `None` means
+/// an unsupported distro — onboarding surfaces that as "install Node/Git/GitHub
+/// CLI with your distro's package manager" rather than pretending it can help.
+#[cfg(target_os = "linux")]
+pub fn get_linux_package_manager() -> Option<(LinuxPackageManager, std::path::PathBuf)> {
+    LinuxPackageManager::ALL
+        .iter()
+        .find_map(|pm| which::which(pm.binary()).ok().map(|path| (*pm, path)))
+}
+
+/// The platform's package manager as `(path, friendly name)`, or `None` when
+/// there isn't one to drive.
+///
+/// Collapses the per-OS branching that the setup status checks used to repeat:
+/// Winget on Windows, Homebrew on macOS, and on Linux Homebrew when it's
+/// installed (it behaves exactly like the macOS path — no root needed) falling
+/// back to the distro's own package manager.
+pub fn get_package_manager() -> Option<(std::path::PathBuf, String)> {
+    #[cfg(windows)]
+    {
+        return get_winget_command().map(|p| (p, "Winget".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return get_brew_command().map(|p| (p, "Homebrew".to_string()));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(brew) = get_brew_command() {
+            return Some((brew, "Homebrew".to_string()));
+        }
+        return get_linux_package_manager().map(|(pm, path)| (path, pm.display_name().to_string()));
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        get_brew_command().map(|p| (p, "Homebrew".to_string()))
+    }
 }
 
 /// Check if Winget is installed (Windows only)
@@ -2141,6 +2291,102 @@ mod tests {
             if let Some(path) = get_login_shell_path() {
                 assert!(!path.is_empty());
             }
+        }
+    }
+
+    /// Package-manager detection, the thing onboarding's first step depends on.
+    mod package_manager_tests {
+        use super::*;
+
+        /// Every Linux distro ships a package manager, so detection returning
+        /// `None` there means onboarding would dead-end on step 1.
+        #[test]
+        #[cfg(target_os = "linux")]
+        fn linux_always_finds_a_package_manager() {
+            let found = get_package_manager();
+            assert!(
+                found.is_some(),
+                "no package manager detected on a Linux host — onboarding's \
+                 Package Manager step would report not-installed with nothing \
+                 the user can do about it"
+            );
+            let (path, name) = found.unwrap();
+            assert!(
+                path.exists(),
+                "reported a path that does not exist: {path:?}"
+            );
+            assert!(!name.is_empty());
+        }
+
+        /// Homebrew-on-Linux lives under a prefix neither macOS path covers.
+        /// Missing it is what made a brew-equipped Linux machine report
+        /// "Package Manager: not installed".
+        #[test]
+        #[cfg(target_os = "linux")]
+        fn linuxbrew_prefix_is_searched() {
+            let linuxbrew = std::path::Path::new("/home/linuxbrew/.linuxbrew/bin/brew");
+            if linuxbrew.exists() {
+                assert!(
+                    get_brew_command().is_some(),
+                    "Homebrew is installed at the Linux prefix but was not found"
+                );
+            }
+        }
+
+        /// Detection must not report a manager whose binary isn't really there.
+        #[test]
+        #[cfg(target_os = "linux")]
+        fn detected_system_manager_binary_exists() {
+            if let Some((pm, path)) = get_linux_package_manager() {
+                assert!(path.exists(), "{:?} reported at a missing path", pm);
+                assert!(!pm.display_name().is_empty());
+                assert!(!pm.binary().is_empty());
+            }
+        }
+
+        /// Each known manager must have a distinct binary and display name —
+        /// a duplicate would make the detection order silently shadow one.
+        #[test]
+        #[cfg(target_os = "linux")]
+        fn known_managers_are_distinct() {
+            let binaries: std::collections::HashSet<_> = LinuxPackageManager::ALL
+                .iter()
+                .map(|p| p.binary())
+                .collect();
+            assert_eq!(binaries.len(), LinuxPackageManager::ALL.len());
+
+            let names: std::collections::HashSet<_> = LinuxPackageManager::ALL
+                .iter()
+                .map(|p| p.display_name())
+                .collect();
+            assert_eq!(names.len(), LinuxPackageManager::ALL.len());
+        }
+
+        /// The Terminal tab spawns this — it must be an absolute path that
+        /// exists, or the tab fails to open with no useful error.
+        #[test]
+        #[cfg(not(windows))]
+        fn user_shell_is_a_real_executable() {
+            let shell = get_user_shell();
+            let path = std::path::Path::new(&shell);
+            assert!(path.is_absolute(), "shell is not absolute: {shell}");
+            assert!(path.exists(), "shell does not exist: {shell}");
+        }
+
+        /// A `$SHELL` naming a shell that has since been uninstalled must not
+        /// be handed to the spawner.
+        #[test]
+        #[cfg(not(windows))]
+        fn stale_shell_env_falls_back() {
+            let original = std::env::var("SHELL").ok();
+            // SAFETY: single-threaded test; restored before returning.
+            unsafe { std::env::set_var("SHELL", "/definitely/not/a/shell") };
+            let shell = get_user_shell();
+            match original {
+                Some(v) => unsafe { std::env::set_var("SHELL", v) },
+                None => unsafe { std::env::remove_var("SHELL") },
+            }
+            assert_eq!(shell, fallback_shell());
         }
     }
 

@@ -61,9 +61,7 @@ pub async fn install_node_via_brew(app: tauri::AppHandle) -> Result<(), CommandE
         return Ok(());
     }
 
-    let brew = get_brew_command().ok_or(
-        "Homebrew is needed to install this. Install Homebrew from the Package Manager step first, then try again.",
-    )?;
+    let brew = get_brew_command().ok_or_else(missing_brew_error)?;
 
     let output = create_command(&brew)
         .args(["install", "node"])
@@ -97,9 +95,7 @@ pub async fn install_git_via_brew(app: tauri::AppHandle) -> Result<(), CommandEr
         return Ok(());
     }
 
-    let brew = get_brew_command().ok_or(
-        "Homebrew is needed to install this. Install Homebrew from the Package Manager step first, then try again.",
-    )?;
+    let brew = get_brew_command().ok_or_else(missing_brew_error)?;
 
     let output = create_command(&brew)
         .args(["install", "git"])
@@ -133,9 +129,7 @@ pub async fn install_gh_via_brew(app: tauri::AppHandle) -> Result<(), CommandErr
         return Ok(());
     }
 
-    let brew = get_brew_command().ok_or(
-        "Homebrew is needed to install this. Install Homebrew from the Package Manager step first, then try again.",
-    )?;
+    let brew = get_brew_command().ok_or_else(missing_brew_error)?;
 
     let output = create_command(&brew)
         .args(["install", "gh"])
@@ -189,9 +183,7 @@ pub async fn install_brew_packages(
         return Ok(());
     }
 
-    let brew = get_brew_command().ok_or(
-        "Homebrew is needed to install this. Install Homebrew from the Package Manager step first, then try again.",
-    )?;
+    let brew = get_brew_command().ok_or_else(missing_brew_error)?;
 
     let brew_packages: Vec<&str> = packages.iter().map(|p| p.as_str()).collect();
 
@@ -210,6 +202,34 @@ pub async fn install_brew_packages(
     }
 
     Ok(())
+}
+
+/// The error for "this install needs Homebrew and Homebrew isn't here".
+///
+/// Platform-specific on purpose: on macOS the wizard's Package Manager step
+/// really does install Homebrew, so pointing back at it is actionable. On Linux
+/// it isn't — Homebrew is optional there and the wizard drives the distro's own
+/// package manager through the terminal instead, so telling a Linux user to
+/// "install Homebrew from the Package Manager step" is a dead end. Reaching
+/// this branch on Linux means the frontend routed a brew install to a machine
+/// without brew, so name the real remedy.
+fn missing_brew_error() -> CommandError {
+    #[cfg(target_os = "linux")]
+    {
+        CommandError::expected(
+            "This install path needs Homebrew, which isn't installed on this machine. \
+             On Linux, install Node, Git and the GitHub CLI with your distribution's \
+             package manager instead — the Package Manager step in setup runs the right \
+             commands for you.",
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        CommandError::expected(
+            "Homebrew is needed to install this. Install Homebrew from the Package Manager \
+             step first, then try again.",
+        )
+    }
 }
 
 /// Turn a failed `brew` run's stderr into an actionable `CommandError`.

@@ -42,6 +42,13 @@ export const isWindows = () => platform() === 'windows';
 /** macOS only. Gates Mac-only features (e.g. the native mobile preview, which
  *  depends on Xcode/simctl and hasn't been validated on Windows). */
 export const isMac = () => platform() === 'macos';
+/**
+ * Linux only. Gates the setup paths that can't be shared with macOS: Linux has
+ * no single package manager to assume, and its system ones need `sudo`, so
+ * installs run through the interactive terminal rather than a silent backend
+ * command (see `getTerminalCommands`).
+ */
+export const isLinux = () => platform() === 'linux';
 
 /**
  * The OS's file-manager name, for "Reveal in …" / "Open in …" labels. macOS
@@ -690,8 +697,21 @@ export async function installPackages(packages: string[]): Promise<void> {
 /** Brew-installed packages that can be batched */
 export const BREW_PACKAGES = new Set(['node', 'git', 'gh']);
 
-/** Package manager-installed packages (Homebrew on macOS, Winget on Windows) */
-export const PKG_MGR_PACKAGES = new Set(['node', 'git', 'gh']);
+/**
+ * Items the backend installs silently via the platform's package manager
+ * (Homebrew on macOS, Winget on Windows).
+ *
+ * Empty on Linux. The distro package managers need root, and a silent
+ * subprocess has nowhere to put a sudo password prompt — so on Linux these
+ * same items install through the interactive terminal instead. See
+ * `getUsesTerminal` and `getLinuxTerminalCommands`.
+ */
+export function getPkgMgrPackages(): Set<string> {
+  return isLinux() ? new Set<string>() : new Set(['node', 'git', 'gh']);
+}
+
+/** Package manager-installed packages, for the current platform. */
+export const PKG_MGR_PACKAGES = getPkgMgrPackages();
 
 /**
  * Check if the npm cache directory (~/.npm) is writable.
@@ -722,6 +742,110 @@ const NPM_NETWORK_FLAGS = [
   '--fetch-retries=3',
   '--fetch-retry-maxtimeout=30000',
 ];
+
+/**
+ * Shell prelude that resolves the machine's package manager into `$SS_PKG`.
+ *
+ * Linux has no package manager to hard-code the way macOS has Homebrew, and the
+ * app can't know the distro at build time — so detection happens in the shell,
+ * at run time, and each install command below branches on the result. Homebrew
+ * wins when it's present: it needs no root and behaves exactly like the macOS
+ * path. Otherwise we drive the distro's own manager, which does need `sudo` —
+ * hence these run in the interactive terminal, where the password prompt can
+ * actually reach the user.
+ */
+const LINUX_PKG_DETECT = [
+  'if command -v brew >/dev/null 2>&1; then SS_PKG=brew',
+  'elif command -v apt-get >/dev/null 2>&1; then SS_PKG=apt',
+  'elif command -v dnf >/dev/null 2>&1; then SS_PKG=dnf',
+  'elif command -v pacman >/dev/null 2>&1; then SS_PKG=pacman',
+  'elif command -v zypper >/dev/null 2>&1; then SS_PKG=zypper',
+  'elif command -v apk >/dev/null 2>&1; then SS_PKG=apk',
+  'else',
+  '  echo "Could not find a supported package manager (apt, dnf, pacman, zypper or apk)." >&2',
+  '  echo "Install this tool with your distribution\'s package manager, then click Check again." >&2',
+  '  exit 1',
+  'fi',
+].join('\n');
+
+/**
+ * Build a Linux install command: announce, detect, then run the per-manager
+ * branch. The leading echo is not cosmetic — the onboarding terminal kills a
+ * PTY that produces no output for 10s, so every step must speak immediately
+ * (issue #245).
+ */
+function linuxInstall(announce: string, branches: Record<string, string>): TerminalCommand {
+  const cases = Object.entries(branches)
+    .map(([mgr, cmd]) => `  ${mgr}) ${cmd} ;;`)
+    .join('\n');
+  return {
+    command: '/bin/bash',
+    args: [
+      '-c',
+      [`echo "${announce}"`, LINUX_PKG_DETECT, 'case "$SS_PKG" in', cases, 'esac'].join('\n'),
+    ],
+  };
+}
+
+/**
+ * Linux-only overrides for the shared Unix command set.
+ *
+ * Two things differ from macOS. The Package Manager step has nothing to install
+ * (every distro ships one), so it just reports what it found. And node/git/gh —
+ * which macOS installs silently through Homebrew via the backend — need root
+ * here, so they become terminal steps.
+ */
+function getLinuxTerminalCommands(): Record<string, TerminalCommand> {
+  return {
+    homebrew: {
+      command: '/bin/bash',
+      args: [
+        '-c',
+        [
+          'echo "Looking for a package manager…"',
+          LINUX_PKG_DETECT,
+          'echo ""',
+          'echo "Found $SS_PKG. Linux ships its own package manager, so there is nothing to install here."',
+        ].join('\n'),
+      ],
+    },
+    node: linuxInstall('Installing Node.js…', {
+      brew: 'brew install node',
+      // Debian/Ubuntu ship a Node too old for current tooling (24.04 is still
+      // on 18.x), so use NodeSource's LTS repo rather than the distro package.
+      apt: 'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs',
+      dnf: 'sudo dnf install -y nodejs npm',
+      pacman: 'sudo pacman -S --needed --noconfirm nodejs npm',
+      zypper: 'sudo zypper --non-interactive install nodejs npm',
+      apk: 'sudo apk add nodejs npm',
+    }),
+    git: linuxInstall('Installing Git…', {
+      brew: 'brew install git',
+      apt: 'sudo apt-get update && sudo apt-get install -y git',
+      dnf: 'sudo dnf install -y git',
+      pacman: 'sudo pacman -S --needed --noconfirm git',
+      zypper: 'sudo zypper --non-interactive install git',
+      apk: 'sudo apk add git',
+    }),
+    gh: linuxInstall('Installing the GitHub CLI…', {
+      brew: 'brew install gh',
+      // gh is not in Debian/Ubuntu's repos — GitHub's own apt repo has to be
+      // added first. This is GitHub's documented install sequence.
+      apt: [
+        'sudo mkdir -p -m 755 /etc/apt/keyrings',
+        'curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null',
+        'sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg',
+        'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null',
+        'sudo apt-get update',
+        'sudo apt-get install -y gh',
+      ].join(' && '),
+      dnf: 'sudo dnf install -y gh',
+      pacman: 'sudo pacman -S --needed --noconfirm github-cli',
+      zypper: 'sudo zypper --non-interactive install gh',
+      apk: 'sudo apk add github-cli',
+    }),
+  };
+}
 
 /** Get terminal commands based on current platform */
 export function getTerminalCommands(): Record<string, TerminalCommand> {
@@ -826,7 +950,7 @@ export function getTerminalCommands(): Record<string, TerminalCommand> {
     };
   } else {
     // macOS/Linux commands (using bash)
-    return {
+    const unix: Record<string, TerminalCommand> = {
       homebrew: {
         command: '/bin/bash',
         args: [
@@ -944,25 +1068,41 @@ export function getTerminalCommands(): Record<string, TerminalCommand> {
         args: ['login'],
       },
     };
+
+    // The agent CLIs, npm and the auth flows above are identical on Linux —
+    // only the package-manager-backed steps differ.
+    return isLinux() ? { ...unix, ...getLinuxTerminalCommands() } : unix;
   }
 }
 
 /** Terminal commands for interactive installations/auth (uses current platform) */
 export const TERMINAL_COMMANDS: Record<string, TerminalCommand> = getTerminalCommands();
 
+/**
+ * Item IDs that require an interactive terminal, for the current platform.
+ *
+ * On Linux node/git/gh join the list: installing them means `sudo apt-get`
+ * (or dnf/pacman/…), and a password prompt only reaches the user from a PTY.
+ * macOS and Windows install those three silently through Homebrew/Winget.
+ */
+export function getUsesTerminal(): Set<string> {
+  const base = [
+    'homebrew',
+    'npm_fix',
+    'gh_auth',
+    'claude',
+    'claude_auth',
+    'codex',
+    'codex_auth',
+    'opencode',
+    'opencode_auth',
+    'cursor',
+    'cursor_auth',
+    'vercel',
+    'vercel_auth',
+  ];
+  return new Set(isLinux() ? [...base, 'node', 'git', 'gh'] : base);
+}
+
 /** Set of item IDs that require interactive terminal */
-export const USES_TERMINAL = new Set([
-  'homebrew',
-  'npm_fix',
-  'gh_auth',
-  'claude',
-  'claude_auth',
-  'codex',
-  'codex_auth',
-  'opencode',
-  'opencode_auth',
-  'cursor',
-  'cursor_auth',
-  'vercel',
-  'vercel_auth',
-]);
+export const USES_TERMINAL = getUsesTerminal();

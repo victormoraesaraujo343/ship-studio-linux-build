@@ -275,6 +275,25 @@ pub fn register_external_pty(
     }
 }
 
+/// The shell the raw Terminal tab should spawn.
+///
+/// The frontend can't read `$SHELL` itself, and hard-coding one per platform
+/// gets it wrong for anyone whose shell isn't the platform default — on Linux
+/// that includes hard-coding `/bin/zsh`, which often isn't installed at all.
+/// Returns an absolute path that is known to exist; on Windows, PowerShell.
+#[tauri::command]
+#[tracing::instrument]
+pub fn get_default_shell() -> String {
+    #[cfg(windows)]
+    {
+        "powershell.exe".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        crate::utils::get_user_shell()
+    }
+}
+
 /// Unregister an externally-spawned PTY process.
 ///
 /// Called when the PTY exits normally (before window close) to keep the registry clean.

@@ -653,6 +653,7 @@ pub fn run() {
             commands::pty::get_system_env,
             commands::pty::register_external_pty,
             commands::pty::unregister_external_pty,
+            commands::pty::get_default_shell,
             commands::pty::kill_project_pty,
             commands::pty::get_project_pty_pids,
             // Backend-owned PTY sessions (phase 3)

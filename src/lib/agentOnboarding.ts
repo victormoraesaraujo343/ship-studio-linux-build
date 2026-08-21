@@ -12,7 +12,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { SetupItem, isSetupItemReady, isWindows, TerminalCommand } from './setup';
+import { SetupItem, isSetupItemReady, isLinux, isWindows, TerminalCommand } from './setup';
 
 // ============ Test-mode API ============
 
@@ -138,28 +138,51 @@ export function isAgentLedSetupComplete(items: SetupItem[], agentBinaryId: strin
  * (TERMINAL_COMMANDS / installPackages in lib/setup.ts) — the agent gets the
  * wizard's logic as instructions instead of code, so it doesn't improvise.
  */
-function itemInstruction(itemId: string, win: boolean): string | null {
+type PromptOs = 'windows' | 'macos' | 'linux';
+
+/**
+ * Linux has no single package manager to name, so the agent is told to detect
+ * the machine's own and given the per-manager command for each tool. This is
+ * the prompt-shaped twin of `getLinuxTerminalCommands` in lib/setup.ts — the
+ * two must stay in step, because the classic wizard and the agent-led flow are
+ * expected to install things the same way.
+ */
+const LINUX_PKG_PREAMBLE =
+  "first work out which package manager this distribution uses by checking `command -v apt-get`, `command -v dnf`, `command -v pacman`, `command -v zypper`, `command -v apk` and `command -v brew` — prefer Homebrew if it is present (it needs no password), otherwise use the distro's own";
+
+function itemInstruction(itemId: string, os: PromptOs): string | null {
+  const win = os === 'windows';
+  const linux = os === 'linux';
+
   switch (itemId) {
     case 'homebrew':
-      return win
-        ? 'the winget package manager: it ships with Windows via "App Installer" — check with `winget --version`, and if missing, tell the user to install "App Installer" from the Microsoft Store, then verify again'
-        : 'Homebrew: run `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"` — warn the user first that macOS will ask for their computer password and that nothing appears on screen while they type it';
+      if (win)
+        return 'the winget package manager: it ships with Windows via "App Installer" — check with `winget --version`, and if missing, tell the user to install "App Installer" from the Microsoft Store, then verify again';
+      if (linux)
+        return `the package manager: nothing to install — every Linux distribution ships one, so ${LINUX_PKG_PREAMBLE}, and simply tell the user which one you found`;
+      return 'Homebrew: run `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"` — warn the user first that macOS will ask for their computer password and that nothing appears on screen while they type it';
     case 'node':
-      return win
-        ? 'Node.js: run `winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements`'
-        : 'Node.js: run `brew install node` (batch it with git/gh into one `brew install` when those are also missing; if Homebrew was installed moments ago, run `eval "$(/opt/homebrew/bin/brew shellenv)"` first on Apple Silicon, or use /usr/local/bin/brew on Intel)';
+      if (win)
+        return 'Node.js: run `winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements`';
+      if (linux)
+        return 'Node.js: with Homebrew run `brew install node`; on Debian/Ubuntu the distro package is too old, so run `curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -` then `sudo apt-get install -y nodejs`; on Fedora `sudo dnf install -y nodejs npm`; on Arch `sudo pacman -S --needed --noconfirm nodejs npm`; on openSUSE `sudo zypper --non-interactive install nodejs npm` — warn the user that sudo will ask for their computer password and that nothing appears on screen while they type it';
+      return 'Node.js: run `brew install node` (batch it with git/gh into one `brew install` when those are also missing; if Homebrew was installed moments ago, run `eval "$(/opt/homebrew/bin/brew shellenv)"` first on Apple Silicon, or use /usr/local/bin/brew on Intel)';
     case 'npm_fix':
       return win
         ? 'fix npm cache permissions: run `icacls "$env:USERPROFILE\\.npm" /grant "$env:USERNAME:(OI)(CI)F" /T` in PowerShell'
         : 'fix npm cache permissions: run `sudo chown -R $(whoami) ~/.npm` (this needs the computer password again)';
     case 'git':
-      return win
-        ? 'Git: run `winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements`'
-        : 'Git: run `brew install git`';
+      if (win)
+        return 'Git: run `winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements`';
+      if (linux)
+        return 'Git: with Homebrew run `brew install git`; otherwise `sudo apt-get install -y git`, `sudo dnf install -y git`, `sudo pacman -S --needed --noconfirm git` or `sudo zypper --non-interactive install git` to match the package manager you found';
+      return 'Git: run `brew install git`';
     case 'gh':
-      return win
-        ? 'GitHub CLI: run `winget install --id GitHub.cli -e --accept-source-agreements --accept-package-agreements`'
-        : 'GitHub CLI: run `brew install gh`';
+      if (win)
+        return 'GitHub CLI: run `winget install --id GitHub.cli -e --accept-source-agreements --accept-package-agreements`';
+      if (linux)
+        return "GitHub CLI: with Homebrew run `brew install gh`; on Fedora `sudo dnf install -y gh`; on Arch `sudo pacman -S --needed --noconfirm github-cli`; on openSUSE `sudo zypper --non-interactive install gh`; on Debian/Ubuntu gh is NOT in the default repositories, so add GitHub's own first — `sudo mkdir -p -m 755 /etc/apt/keyrings`, `curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null`, `sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg`, then add the `https://cli.github.com/packages stable main` deb line signed by that keyring to /etc/apt/sources.list.d/github-cli.list, then `sudo apt-get update && sudo apt-get install -y gh`";
+      return 'GitHub CLI: run `brew install gh`';
     case 'gh_auth':
       return 'GitHub sign-in: run `gh auth login --web --git-protocol https` — tell the user a browser will open where they sign in or create a free GitHub account, and that they should come back here afterwards';
     default:
@@ -192,7 +215,7 @@ export function buildGuidedSetupPrompt(
   host: HostChoice | null = null,
   alreadyReady: SetupItem[] = []
 ): string {
-  const win = isWindows();
+  const os: PromptOs = isWindows() ? 'windows' : isLinux() ? 'linux' : 'macos';
 
   // The agent is the source of discovery: it gets the FULL required list
   // with check commands and verifies everything itself. Our detection rides
@@ -206,10 +229,17 @@ export function buildGuidedSetupPrompt(
     requiredIds.splice(1, 0, 'npm_fix');
   }
   const instructions = requiredIds
-    .map((id) => itemInstruction(id, win))
+    .map((id) => itemInstruction(id, os))
     .filter((s): s is string => s !== null);
 
-  const pkgCheck = win ? '`winget --version`' : '`brew --version`';
+  // On Linux there is no one package manager to version-check, so ask the
+  // agent to identify whichever one the distro ships instead.
+  const pkgCheck =
+    os === 'windows'
+      ? '`winget --version`'
+      : os === 'linux'
+        ? '`command -v brew apt-get dnf pacman zypper apk`'
+        : '`brew --version`';
   const checkCommands = [
     pkgCheck,
     '`node --version`',
@@ -281,5 +311,8 @@ export function guidedAgentSpawn(agentBinaryId: string, prompt: string): Termina
  * agent CLI they use and pastes the guided prompt themselves.
  */
 export function otherAgentShellSpawn(): TerminalCommand {
-  return isWindows() ? { command: 'powershell', args: [] } : { command: '/bin/zsh', args: ['-il'] };
+  if (isWindows()) return { command: 'powershell', args: [] };
+  // `/bin/zsh` is often absent on Linux, where bash is the shell every
+  // mainstream distro ships — spawning zsh there just fails to open.
+  return { command: isLinux() ? '/bin/bash' : '/bin/zsh', args: ['-il'] };
 }

@@ -13,14 +13,8 @@ use crate::commands::github::get_gh_command;
 use crate::errors::CommandError;
 use crate::external_command::run_with_timeout;
 use crate::types::{FullSetupStatus, OptionalAuths, SetupItemInfo, SetupItemStatus};
-use crate::utils::{create_command, find_executable};
+use crate::utils::{create_command, find_executable, get_package_manager};
 use std::path::Path;
-
-#[cfg(windows)]
-use crate::utils::get_winget_command;
-
-#[cfg(not(windows))]
-use crate::utils::get_brew_command;
 
 /// Timeout for local probes (`node --version`, agent status, …). Generous for a
 /// version print, but bounded — a CLI wedged on stdin or a broken install must
@@ -231,10 +225,12 @@ pub async fn get_full_setup_status() -> FullSetupStatus {
     let active_account_id = get_active_account_id().unwrap_or_else(|_| "default".to_string());
 
     // Locate binaries up front (pure filesystem checks — fast, no subprocesses).
-    #[cfg(windows)]
-    let pkg_mgr_path = get_winget_command();
-    #[cfg(not(windows))]
-    let pkg_mgr_path = get_brew_command();
+    // Winget on Windows, Homebrew on macOS, Homebrew-or-the-distro's-own on
+    // Linux (see utils::get_package_manager).
+    let (pkg_mgr_path, pkg_mgr_name) = match get_package_manager() {
+        Some((path, name)) => (Some(path), name),
+        None => (None, "Package Manager".to_string()),
+    };
     let node_path = find_executable("node");
     let git_path = find_executable("git");
     let gh_path = find_executable("gh");
@@ -420,15 +416,12 @@ pub async fn get_full_setup_status() -> FullSetupStatus {
 
     let mut items = Vec::new();
 
-    // 1. Package Manager (Homebrew on macOS/Linux, Winget on Windows)
-    #[cfg(windows)]
-    let pkg_mgr_name = "Winget";
-    #[cfg(not(windows))]
-    let pkg_mgr_name = "Package Manager";
-
+    // 1. Package Manager — the concrete one we detected (Winget / Homebrew /
+    // APT / DNF / …), so the wizard names the tool the user actually has
+    // instead of a generic label.
     items.push(SetupItemInfo {
         id: "homebrew".to_string(), // Keep ID for backward compatibility
-        friendly_name: pkg_mgr_name.to_string(),
+        friendly_name: pkg_mgr_name,
         status: if pkg_mgr_path.is_some() {
             SetupItemStatus::Ready
         } else {
@@ -717,10 +710,7 @@ pub async fn quick_setup_check() -> crate::types::QuickSetupCheck {
     }
 
     // Fast Tier-1 checks: binary existence only (no --version calls)
-    #[cfg(windows)]
-    let pkg_mgr_present = get_winget_command().is_some();
-    #[cfg(not(windows))]
-    let pkg_mgr_present = get_brew_command().is_some();
+    let pkg_mgr_present = get_package_manager().is_some();
 
     let node_present = find_executable("node").is_some();
     let git_present = find_executable("git").is_some();

@@ -10,7 +10,20 @@
  * @module lib/agent
  */
 
-import { isWindows } from './setup';
+import { invoke } from '@tauri-apps/api/core';
+
+import { isLinux, isWindows } from './setup';
+
+/**
+ * Fallback shell for the raw Terminal tab, by platform.
+ *
+ * Only a fallback: the tab spawns the user's own `$SHELL` when the backend can
+ * resolve one (see `getUserShell`). These are the shells each platform is
+ * guaranteed to have if that lookup comes up empty — zsh is the macOS default,
+ * while on Linux it frequently isn't installed at all and bash is what's
+ * actually there.
+ */
+const FALLBACK_SHELL = isWindows() ? 'powershell.exe' : isLinux() ? '/bin/bash' : '/bin/zsh';
 
 /** Configuration for an AI coding agent integrated with Ship Studio. */
 export interface AgentConfig {
@@ -115,8 +128,8 @@ export const CURSOR: AgentConfig = {
 export const TERMINAL: AgentConfig = {
   id: 'terminal',
   displayName: 'Terminal',
-  binaryName: isWindows() ? 'powershell.exe' : '/bin/zsh',
-  processName: isWindows() ? 'powershell' : 'zsh',
+  binaryName: FALLBACK_SHELL,
+  processName: FALLBACK_SHELL.replace(/^.*[/\\]/, '').replace(/\.exe$/, ''),
   autoAcceptFlag: null,
   additionalDirFlag: null,
   supportsSkills: false,
@@ -126,6 +139,27 @@ export const TERMINAL: AgentConfig = {
   notFoundMessage: 'Error starting terminal',
   installHint: 'Could not launch shell',
 };
+
+/** Cached result of `get_default_shell` — the value can't change mid-session. */
+let userShell: string | null = null;
+
+/**
+ * The shell the raw Terminal tab should spawn: the user's own `$SHELL`,
+ * resolved by the backend (the frontend can't read the environment).
+ *
+ * Falls back to {@link FALLBACK_SHELL} if the backend can't answer, so a failed
+ * lookup degrades to the platform default instead of breaking the tab.
+ */
+export async function getUserShell(): Promise<string> {
+  if (userShell === null) {
+    try {
+      userShell = await invoke<string>('get_default_shell');
+    } catch {
+      userShell = FALLBACK_SHELL;
+    }
+  }
+  return userShell;
+}
 
 /** All available agents (AI coding assistants). */
 export const ALL_AGENTS: AgentConfig[] = [CLAUDE_CODE, CODEX, OPENCODE, CURSOR];

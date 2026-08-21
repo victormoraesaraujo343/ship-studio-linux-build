@@ -55,6 +55,7 @@ import { getTerminalGpuEnabled } from '../../lib/settings';
 import { attachedLibraryDirs } from '../../lib/attached-libraries';
 import { decideStartupTimeoutAction } from './startupWatchdog';
 import type { AgentConfig } from '../../lib/agent';
+import { getUserShell, TERMINAL } from '../../lib/agent';
 import '@xterm/xterm/css/xterm.css';
 
 /** Agent status based on terminal title */
@@ -720,6 +721,14 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Termi
         // On Windows, agent may be a .cmd script - must run through cmd.exe
         let spawnCmd = isWin ? 'cmd.exe' : agent.binaryName;
         const spawnArgs = isWin ? ['/C', agent.binaryName, ...agentArgs] : agentArgs;
+
+        // The raw Terminal tab spawns the user's *own* shell. Its binaryName is
+        // only a per-platform fallback, and a hard-coded one is wrong for
+        // anyone who doesn't use the platform default — on Linux `/bin/zsh`
+        // frequently isn't installed at all, which left the tab unable to open.
+        if (!isWin && agent.id === TERMINAL.id) {
+          spawnCmd = await getUserShell();
+        }
 
         // Resolve the bare binary name through the backend's thorough
         // discovery (every NVM version, ~/.<agent>/bin, npm prefix -g …) the
