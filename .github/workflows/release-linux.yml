@@ -1,0 +1,168 @@
+# Linux release — builds the AppImage and attaches it to the tagged release.
+#
+# Separate from release.yml on purpose. That workflow is the upstream macOS
+# pipeline: it signs with an Apple certificate, produces updater artifacts, and
+# writes the auto-update manifest into a *different* repo (ship-studio/releases)
+# with a PAT. None of that infrastructure belongs to this fork, and none of its
+# secrets exist here. Bolting Linux onto that matrix would make every Linux
+# build depend on credentials it can't have.
+#
+# So this workflow deliberately does less: compile, bundle, attach. No signing,
+# no updater manifest — see "Auto-update" below.
+name: Release (Linux)
+
+on:
+  push:
+    tags:
+      - 'v*-linux'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach the AppImage to'
+        required: true
+
+jobs:
+  build:
+    name: AppImage (x86_64)
+    # Pinned to the oldest supported runner on purpose: an AppImage links
+    # against the glibc it was built with, so building on a newer image raises
+    # the minimum glibc for everyone downloading it. Older runner = runs on more
+    # distros. This is the one place where "latest" is the wrong default.
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      # Tauri's Linux backend is WebKitGTK; these are its build-time deps.
+      # libayatana-appindicator is what the tray icon binds against.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            file
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Run tests
+        run: pnpm test:run
+
+      - name: Build AppImage
+        env:
+          # linuxdeploy ships its own `strip`, built in 2024. Any library
+          # carrying a `.relr.dyn` section (RELR relocations — standard on
+          # current rolling distros) makes it fail with "unknown type [0x13]",
+          # and one failed strip aborts the whole bundle. Stripping only makes
+          # the file smaller, so skipping it costs nothing.
+          #
+          # ubuntu-22.04 is old enough that this probably won't trigger here.
+          # It stays because the same command has to work when someone builds
+          # locally on Arch/Fedora, where it does trigger — and a CI recipe that
+          # only works in CI is how local builds quietly rot.
+          NO_STRIP: '1'
+        run: |
+          pnpm tauri build --bundles appimage \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      # createUpdaterArtifacts is true in tauri.conf.json, which makes the build
+      # demand TAURI_SIGNING_PRIVATE_KEY — a secret this fork does not have (the
+      # keypair belongs to upstream). Overriding it per-invocation above keeps
+      # tauri.conf.json untouched, so the macOS/Windows pipelines still see the
+      # config they expect.
+
+      - name: Locate the AppImage
+        id: appimage
+        run: |
+          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -type f | head -1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "No AppImage produced — the bundle step failed silently."
+            find src-tauri/target/release/bundle -type f | head -50
+            exit 1
+          fi
+          # Tauri names it "Ship Studio_0.18.6_amd64.AppImage". The space is
+          # fine on disk but makes an awkward download URL, so republish under a
+          # stable, space-free name.
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION%-linux}"
+          DEST="ShipStudio_${VERSION}_amd64.AppImage"
+          cp "$APPIMAGE" "$DEST"
+          echo "path=$DEST" >> "$GITHUB_OUTPUT"
+          ls -la "$DEST"
+
+      # A binary that cannot start is worth catching here rather than in a bug
+      # report. xvfb gives it a display; the app is killed after it proves it
+      # came up, since there is nothing to interact with headlessly.
+      - name: Smoke test — the AppImage starts
+        run: |
+          sudo apt-get install -y xvfb
+          chmod +x "${{ steps.appimage.outputs.path }}"
+          set +e
+          xvfb-run -a timeout 25 "./${{ steps.appimage.outputs.path }}" > smoke.log 2>&1
+          CODE=$?
+          set -e
+          cat smoke.log || true
+          # 124 = still running when timeout fired, which is what a healthy GUI
+          # app does. Anything else means it exited on its own — a crash.
+          if [ "$CODE" -ne 124 ]; then
+            echo "AppImage exited on its own with code $CODE — treating as a crash."
+            exit 1
+          fi
+          echo "AppImage stayed up."
+
+      - name: Attach the AppImage to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ steps.appimage.outputs.path }}
+          draft: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload as a workflow artifact too
+        uses: actions/upload-artifact@v6
+        with:
+          name: ShipStudio-linux-x86_64
+          path: ${{ steps.appimage.outputs.path }}
+          if-no-files-found: error
+
+# Auto-update on Linux is deliberately not wired up.
+#
+# The updater endpoints in tauri.conf.json point at
+# github.com/ship-studio/releases — upstream's public releases repo, which this
+# fork cannot write to (release.yml pushes there with a RELEASES_PAT secret that
+# does not exist here). Signing the bundle would still leave nowhere to publish
+# the manifest, so the signature would be decoration.
+#
+# To enable it later: generate a keypair (`pnpm tauri signer generate`), put the
+# public half in tauri.conf.json, store the private half plus its password as
+# repo secrets, point the updater endpoints at this repo's releases, and add a
+# linux-x86_64 entry to the manifest. That also decouples the fork's update
+# channel from upstream's, which is a prerequisite regardless of platform.
