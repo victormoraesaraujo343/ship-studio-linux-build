@@ -141,7 +141,12 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: ${{ steps.appimage.outputs.path }}
-          draft: true
+          # Published, not draft. A draft release is invisible to anonymous
+          # callers of the releases API, which is exactly how AppImage update
+          # managers (Gear Lever and friends) look for a new version — a draft
+          # would build the artifact and then hide it from the thing meant to
+          # fetch it.
+          draft: false
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
