@@ -1,3 +1,31 @@
+> ## ⚠️ Personal fork — not the official Ship Studio
+>
+> This is a **personal fork** of
+> [ship-studio/ship-studio](https://github.com/ship-studio/ship-studio), created
+> by [Julian Galluzzo](https://x.com/galluzzo_julian) and released under the MIT
+> license. All credit for the app belongs to him and the original project's
+> contributors. **I am not affiliated with the project, the company, or the
+> team.**
+>
+> **Why it exists.** Official Ship Studio packages for macOS and Windows only.
+> I use Linux. This fork adapts the app to run there — detecting the distro's
+> package manager, respecting the user's actual shell, packaging an AppImage —
+> and adds GitLab alongside GitHub, because that is what I use at work.
+>
+> **What I use it for.** Myself, on my own machine. It is a for-fun project: I
+> am using AI to write most of these adaptations and seeing how far that gets —
+> an experiment, not a product. It is unmaintained, unsupported, carries no
+> warranty, and I do not recommend it to anyone but me.
+>
+> **If you came here looking for Ship Studio,** go to the
+> [official repository](https://github.com/ship-studio/ship-studio) and the
+> [website](https://www.ship.studio/). Report bugs there — anything broken here
+> I most likely broke myself.
+>
+> The README below is the original project's, kept as it came.
+
+---
+
 # Ship Studio
 
 [![CI](https://github.com/ship-studio/ship-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/ship-studio/ship-studio/actions/workflows/ci.yml)
