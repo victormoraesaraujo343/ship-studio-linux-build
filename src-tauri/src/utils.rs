@@ -91,6 +91,17 @@ pub fn get_user_shell() -> String {
         .unwrap_or_else(|| fallback_shell().to_string())
 }
 
+/// Marker that isolates the PATH from anything a chatty rc prints before it.
+#[cfg(not(windows))]
+const PATH_PROBE_MARKER: &str = "__SHIPSTUDIO_PATH__";
+
+/// The one-liner [`get_login_shell_path`] runs in the user's login shell. A
+/// const so `path_probe_parses_in_every_installed_shell` can exercise the exact
+/// string a user's shell will receive — the fish breakage this guards against
+/// was invisible in every unit test that only checked the parsing side.
+#[cfg(not(windows))]
+const PATH_PROBE_COMMAND: &str = "echo \"__SHIPSTUDIO_PATH__$PATH\"";
+
 /// Query the user's login shell for its PATH so we detect tools installed by
 /// any version manager (nvm, volta, fnm, asdf, …) exactly the way their terminal
 /// sees them. A macOS app launched from Finder does NOT inherit this PATH.
@@ -110,8 +121,15 @@ fn get_login_shell_path() -> Option<String> {
     // unique marker isolates the PATH from any banner/prompt a chatty rc prints;
     // stdin is /dev/null so a prompting rc can't block on input. spawn() (not
     // output()) keeps a handle so a slow rc can be killed, not just abandoned.
+    //
+    // `$PATH` is deliberately unbraced. `${PATH}` is a syntax error in fish
+    // ("Variables cannot be bracketed"), and because stderr is /dev/null the
+    // error is swallowed: the marker never prints, this returns None, and PATH
+    // detection silently degrades on every fish machine. Unbraced `$PATH`
+    // expands the same in bash, zsh and fish. Nothing follows the variable, so
+    // the braces were never disambiguating anything.
     let mut child = create_command(&shell)
-        .args(["-lic", "echo \"__SHIPSTUDIO_PATH__${PATH}\""])
+        .args(["-lic", PATH_PROBE_COMMAND])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -141,7 +159,7 @@ fn get_login_shell_path() -> Option<String> {
         Ok(buf) => buf
             .lines()
             .rev()
-            .find_map(|line| line.trim().strip_prefix("__SHIPSTUDIO_PATH__"))
+            .find_map(|line| line.trim().strip_prefix(PATH_PROBE_MARKER))
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty()),
         Err(_) => None,
@@ -2387,6 +2405,60 @@ mod tests {
                 None => unsafe { std::env::remove_var("SHELL") },
             }
             assert_eq!(shell, fallback_shell());
+        }
+
+        /// The PATH probe is handed to whatever the user's login shell is, so it
+        /// must *parse* in each one — not just in the POSIX family. fish is the
+        /// realistic non-POSIX login shell and it rejects `${VAR}` outright
+        /// ("Variables cannot be bracketed"). That failure is silent in
+        /// production: `get_login_shell_path` sends stderr to /dev/null, so a
+        /// syntax error looks exactly like a shell that printed no marker, and
+        /// PATH detection quietly degrades instead of erroring.
+        ///
+        /// Runs the real `PATH_PROBE_COMMAND` under every shell in the list that
+        /// this machine actually has, with `-c` rather than `-lic`: parsing is
+        /// what's under test, and skipping the rc files keeps it fast and immune
+        /// to a developer's personal shell config.
+        #[test]
+        #[cfg(not(windows))]
+        fn path_probe_parses_in_every_installed_shell() {
+            let candidates = [
+                "/bin/sh",
+                "/bin/bash",
+                "/bin/zsh",
+                "/bin/dash",
+                "/bin/ksh",
+                "/bin/fish",
+                "/usr/bin/fish",
+            ];
+            let mut checked = 0;
+            for shell in candidates {
+                if !std::path::Path::new(shell).is_file() {
+                    continue;
+                }
+                let out = match std::process::Command::new(shell)
+                    .args(["-c", PATH_PROBE_COMMAND])
+                    .output()
+                {
+                    Ok(out) => out,
+                    Err(_) => continue,
+                };
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let path = stdout
+                    .lines()
+                    .rev()
+                    .find_map(|line| line.trim().strip_prefix(PATH_PROBE_MARKER))
+                    .map(str::trim);
+                assert!(
+                    path.is_some_and(|p| !p.is_empty()),
+                    "{shell} did not print the probe marker — the command does not \
+                     parse in this shell.\n  command: {PATH_PROBE_COMMAND}\n  \
+                     stdout: {stdout:?}\n  stderr: {:?}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                checked += 1;
+            }
+            assert!(checked > 0, "no candidate shell found to test against");
         }
     }
 
