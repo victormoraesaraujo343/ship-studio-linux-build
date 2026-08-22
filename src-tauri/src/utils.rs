@@ -91,6 +91,28 @@ pub fn get_user_shell() -> String {
         .unwrap_or_else(|| fallback_shell().to_string())
 }
 
+/// Whether `shell` is fish, which is not POSIX-compatible: no `export`, no
+/// `${VAR}`, no `${VAR:-default}`. Anything we hand to the *user's* login shell
+/// (as opposed to a `/bin/bash` we spawn ourselves) has to branch on this.
+///
+/// Matches on the file name so it holds for /bin/fish, /usr/bin/fish and a
+/// Homebrew/Nix fish alike. A versioned name like `fish3` is deliberately not
+/// matched: fish ships no such binary, and a loose match would misroute a shell
+/// that merely starts with "fish".
+pub fn shell_is_fish(shell: &str) -> bool {
+    std::path::Path::new(shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "fish")
+}
+
+/// Quote `value` as a single-quoted fish literal. Inside fish single quotes only
+/// `\` and `'` carry meaning, so escaping those two is sufficient — and unlike
+/// double quotes it keeps `$` in a path from expanding.
+pub fn fish_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 /// Marker that isolates the PATH from anything a chatty rc prints before it.
 #[cfg(not(windows))]
 const PATH_PROBE_MARKER: &str = "__SHIPSTUDIO_PATH__";

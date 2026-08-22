@@ -1890,9 +1890,13 @@ fn detect_jdk_home() -> Option<std::path::PathBuf> {
 /// JDK and SDK locations. Pure for testing. `${VAR:-…}` keeps a user's own
 /// login-shell `JAVA_HOME`/`ANDROID_HOME` winning over the detected paths.
 fn android_build_env_prefix(
+    shell: &str,
     jdk: Option<&std::path::Path>,
     sdk: Option<&std::path::Path>,
 ) -> String {
+    if crate::utils::shell_is_fish(shell) {
+        return fish_android_build_env_prefix(jdk, sdk);
+    }
     let mut prefix = String::new();
     if let Some(jdk) = jdk {
         prefix.push_str(&format!(
@@ -1904,6 +1908,41 @@ fn android_build_env_prefix(
         prefix.push_str(&format!(
             "export ANDROID_HOME=\"${{ANDROID_HOME:-{}}}\"; ",
             sdk.display()
+        ));
+    }
+    prefix
+}
+
+/// The fish spelling of [`android_build_env_prefix`].
+///
+/// fish shares none of the three constructs the POSIX form relies on: `export`
+/// is not a command, `${VAR}` is a parse error, and there is no `${VAR:-default}`
+/// expansion — so "keep the login shell's value, else fall back to the detected
+/// path" becomes an explicit `test -z` branch. The `else` arm re-sets the
+/// existing value on purpose: `export VAR="${VAR:-x}"` exports whether or not the
+/// variable was already exported, and `set -gx` is how fish says that.
+///
+/// PATH is a real list in fish, so it is extended by prepending an element
+/// rather than by splicing a colon-joined string. Paths are single-quoted, which
+/// in fish also stops a `$` inside a detected path from expanding.
+fn fish_android_build_env_prefix(
+    jdk: Option<&std::path::Path>,
+    sdk: Option<&std::path::Path>,
+) -> String {
+    let mut prefix = String::new();
+    if let Some(jdk) = jdk {
+        let quoted = crate::utils::fish_single_quote(&jdk.display().to_string());
+        prefix.push_str(&format!(
+            "if test -z \"$JAVA_HOME\"; set -gx JAVA_HOME {quoted}; \
+             else; set -gx JAVA_HOME $JAVA_HOME; end; \
+             set -gx PATH $JAVA_HOME/bin $PATH; "
+        ));
+    }
+    if let Some(sdk) = sdk {
+        let quoted = crate::utils::fish_single_quote(&sdk.display().to_string());
+        prefix.push_str(&format!(
+            "if test -z \"$ANDROID_HOME\"; set -gx ANDROID_HOME {quoted}; \
+             else; set -gx ANDROID_HOME $ANDROID_HOME; end; "
         ));
     }
     prefix
@@ -1921,8 +1960,14 @@ fn with_android_build_env(platform: crate::state::Platform, cmd: String) -> Stri
     if platform != crate::state::Platform::Android {
         return cmd;
     }
-    let prefix =
-        android_build_env_prefix(detect_jdk_home().as_deref(), android_sdk_root().as_deref());
+    // The user's login shell is what BuildTerminal spawns this under (`-lic`),
+    // and it decides the syntax. Same resolution the frontend uses: its
+    // getUserShell() invokes get_default_shell, which is get_user_shell().
+    let prefix = android_build_env_prefix(
+        &crate::utils::get_user_shell(),
+        detect_jdk_home().as_deref(),
+        android_sdk_root().as_deref(),
+    );
     format!("{prefix}{cmd}")
 }
 
@@ -3096,22 +3141,144 @@ mod tests {
         let jdk = Path::new("/opt/jdk");
         let sdk = Path::new("/Users/x/Library/Android/sdk");
         // Both detected → both exported, login-shell values winning via ${VAR:-}.
-        let p = android_build_env_prefix(Some(jdk), Some(sdk));
+        let p = android_build_env_prefix("/bin/bash", Some(jdk), Some(sdk));
         assert_eq!(
             p,
             "export JAVA_HOME=\"${JAVA_HOME:-/opt/jdk}\"; \
              export PATH=\"$JAVA_HOME/bin:$PATH\"; \
              export ANDROID_HOME=\"${ANDROID_HOME:-/Users/x/Library/Android/sdk}\"; "
         );
+        // zsh is the same POSIX form — the branch is fish or not-fish.
+        assert_eq!(
+            android_build_env_prefix("/bin/zsh", Some(jdk), Some(sdk)),
+            p
+        );
         // SDK alone still exports — a missing ANDROID_HOME is what breaks
         // Gradle's "SDK location not found" check on projects without a
         // local.properties.
         assert_eq!(
-            android_build_env_prefix(None, Some(sdk)),
+            android_build_env_prefix("/bin/bash", None, Some(sdk)),
             "export ANDROID_HOME=\"${ANDROID_HOME:-/Users/x/Library/Android/sdk}\"; "
         );
         // Nothing detected → empty prefix (command runs unchanged).
-        assert_eq!(android_build_env_prefix(None, None), "");
+        assert_eq!(android_build_env_prefix("/bin/bash", None, None), "");
+        assert_eq!(android_build_env_prefix("/usr/bin/fish", None, None), "");
+    }
+
+    /// fish gets a different spelling, and none of the POSIX constructs may
+    /// survive into it — `export`, `${VAR}` and `${VAR:-}` are each a parse
+    /// error there.
+    #[test]
+    fn android_build_env_prefix_speaks_fish() {
+        use std::path::Path;
+        let jdk = Path::new("/opt/jdk");
+        let sdk = Path::new("/opt/android-sdk");
+        let p = android_build_env_prefix("/usr/bin/fish", Some(jdk), Some(sdk));
+        assert_eq!(
+            p,
+            "if test -z \"$JAVA_HOME\"; set -gx JAVA_HOME '/opt/jdk'; \
+             else; set -gx JAVA_HOME $JAVA_HOME; end; \
+             set -gx PATH $JAVA_HOME/bin $PATH; \
+             if test -z \"$ANDROID_HOME\"; set -gx ANDROID_HOME '/opt/android-sdk'; \
+             else; set -gx ANDROID_HOME $ANDROID_HOME; end; "
+        );
+        assert!(!p.contains("export "), "fish has no export: {p}");
+        assert!(!p.contains("${"), "fish cannot parse ${{VAR}}: {p}");
+        // A path with a space stays one element, and a `$` in it must not expand.
+        let odd = Path::new("/opt/my jdk/$HOME");
+        let q = android_build_env_prefix("/usr/bin/fish", Some(odd), None);
+        assert!(q.contains("'/opt/my jdk/$HOME'"), "{q}");
+    }
+
+    /// The prefix is a string handed to the user's login shell, so the thing
+    /// worth testing is that the shell *does what we meant* — not that we built
+    /// the string we expected. Runs it under every candidate shell present on
+    /// this machine and reads the resulting environment back out.
+    ///
+    /// `-c` rather than `-lic`: the rc files are irrelevant to the syntax under
+    /// test, and skipping them keeps this fast and independent of whatever the
+    /// developer's own shell config does to JAVA_HOME.
+    #[test]
+    #[cfg(not(windows))]
+    fn android_build_env_prefix_applies_in_every_installed_shell() {
+        use std::path::Path;
+        let jdk = Path::new("/opt/jdk");
+        let sdk = Path::new("/opt/android-sdk");
+        // `echo "…$VAR…"` is spelled the same in POSIX shells and in fish.
+        let report = "echo \"J=$JAVA_HOME A=$ANDROID_HOME P=$PATH\"";
+
+        let mut checked = 0;
+        for shell in [
+            "/bin/sh",
+            "/bin/bash",
+            "/bin/zsh",
+            "/bin/dash",
+            "/bin/ksh",
+            "/bin/fish",
+            "/usr/bin/fish",
+        ] {
+            if !Path::new(shell).is_file() {
+                continue;
+            }
+            let prefix = android_build_env_prefix(shell, Some(jdk), Some(sdk));
+
+            // 1. Neither variable set → the detected paths are used, and
+            //    $JAVA_HOME/bin lands at the front of PATH.
+            let out = match std::process::Command::new(shell)
+                .args(["-c", &format!("{prefix}{report}")])
+                .env_remove("JAVA_HOME")
+                .env_remove("ANDROID_HOME")
+                .output()
+            {
+                Ok(out) => out,
+                Err(_) => continue,
+            };
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let line = stdout
+                .lines()
+                .rev()
+                .find(|l| l.trim_start().starts_with("J="))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{shell} printed no report — prefix did not run.\n  \
+                         prefix: {prefix}\n  stdout: {stdout:?}\n  stderr: {:?}",
+                        String::from_utf8_lossy(&out.stderr)
+                    )
+                });
+            assert!(
+                line.contains("J=/opt/jdk"),
+                "{shell}: JAVA_HOME not applied — {line}"
+            );
+            assert!(
+                line.contains("A=/opt/android-sdk"),
+                "{shell}: ANDROID_HOME not applied — {line}"
+            );
+            assert!(
+                line.contains("P=/opt/jdk/bin:"),
+                "{shell}: JAVA_HOME/bin not prepended to PATH — {line}"
+            );
+
+            // 2. Already set in the environment → the login shell's value wins,
+            //    which is the whole point of the ${VAR:-} form being preserved.
+            let out = std::process::Command::new(shell)
+                .args(["-c", &format!("{prefix}{report}")])
+                .env("JAVA_HOME", "/preset/jdk")
+                .env("ANDROID_HOME", "/preset/sdk")
+                .output()
+                .expect("shell runs");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let line = stdout
+                .lines()
+                .rev()
+                .find(|l| l.trim_start().starts_with("J="))
+                .unwrap_or("");
+            assert!(
+                line.contains("J=/preset/jdk") && line.contains("A=/preset/sdk"),
+                "{shell}: existing environment must win — {line}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no candidate shell found to test against");
     }
 
     #[test]
