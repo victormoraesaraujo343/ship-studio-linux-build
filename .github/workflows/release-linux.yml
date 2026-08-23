@@ -91,43 +91,68 @@ jobs:
           pnpm tauri build --bundles appimage \
             --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      # linuxdeploy copies the binary's dependency closure into the AppDir,
-      # which sweeps up libraries that must never be bundled: the ones that talk
-      # to the host's GPU driver and kernel. An AppImage puts its own lib
-      # directory ahead of the system's, so a frozen copy of libwayland-egl
-      # shadows the host's and EGL fails to initialise:
+      # The AppImage built here opened as a white window on an Arch-based
+      # machine, logging
       #
       #   Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...
       #
-      # WebKit then aborts before painting, and the app opens as a white window
-      # on a machine whose driver is newer than the build host's. The same
-      # binary run unbundled is fine, which is what pins the cause on packaging
-      # rather than on the app.
+      # WebKit aborts its renderer there and paints nothing while the process
+      # stays up. What is established:
       #
-      # These come from the host at runtime or not at all. Removing them and
-      # repackaging is the only lever available — Tauri exposes no exclude list
-      # for the AppImage bundler.
+      #   built here (ubuntu-22.04 libraries)  -> fails on that machine
+      #   built on that machine (its own libs) -> works
+      #   the binary run unbundled             -> works
+      #
+      # So it is the bundled dependency closure, not the app and not the
+      # driver. linuxdeploy copies ~150 system libraries into the AppDir and
+      # an AppImage puts its own lib directory ahead of the host's, so on a
+      # distro whose graphics stack has moved on, Ubuntu 22.04's copies shadow
+      # libraries that have to match the running driver. (Independent evidence
+      # of how far apart the two are: this AppDir cannot even be repackaged on
+      # Arch — it references libtiff.so.5, which no longer exists there.)
+      #
+      # Removing the graphics libraries so they resolve from the host is the
+      # standard remedy and the only lever available, since Tauri exposes no
+      # exclude list for its AppImage bundler. Note it is NOT yet confirmed to
+      # fix the reported machine: deleting libwayland-egl locally appeared to
+      # fix it, but a pristine local build containing that same library works
+      # fine, so that result was the build host changing, not the deletion.
+      # The check that will actually settle it is running this workflow's
+      # artifact on the machine that failed.
       - name: Unbundle host graphics libraries and repackage
         env:
           NO_STRIP: '1'
           ARCH: x86_64
+          # The runner has no FUSE, so an AppImage cannot mount itself to run.
+          # Tauri handles this internally when it drives linuxdeploy; invoking
+          # linuxdeploy directly does not, and fails with
+          #   dlopen(): error loading libfuse.so.2
+          # This makes it unpack to a temp dir and exec from there instead. It
+          # is inherited by the appimage plugin linuxdeploy runs in turn, which
+          # needs it for the same reason.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
-          APPDIR=$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppDir' -type d | head -1)
+          BUNDLE_DIR=src-tauri/target/release/bundle/appimage
+          APPDIR=$(find "$BUNDLE_DIR" -maxdepth 1 -name '*.AppDir' -type d | head -1)
           if [ -z "$APPDIR" ]; then
             echo "No AppDir found — the bundle step did not produce one."
             exit 1
           fi
 
+          # The AppDir is named after productName, which contains a space
+          # ("Ship Studio.AppDir"), so every path here has to survive it —
+          # -print0 with a null-delimited read rather than word splitting.
           REMOVED=0
           for pattern in 'libwayland-egl.so*' 'libEGL.so*' 'libGL.so*' 'libGLX.so*' \
                          'libgbm.so*' 'libdrm.so*' 'libGLdispatch.so*'; do
-            for f in $(find "$APPDIR/usr/lib" -maxdepth 1 -name "$pattern" 2>/dev/null); do
+            while IFS= read -r -d '' f; do
               echo "Removing bundled $(basename "$f") — must come from the host"
               rm -f "$f"
               REMOVED=$((REMOVED + 1))
-            done
+            done < <(find "$APPDIR/usr/lib" -maxdepth 1 -name "$pattern" -print0 2>/dev/null)
           done
 
+          echo "Removed $REMOVED bundled graphics librar(y|ies)."
           if [ "$REMOVED" -eq 0 ]; then
             echo "Nothing to remove. Either linuxdeploy's behaviour changed or a"
             echo "newer runner no longer pulls these in. Not an error, but the"
@@ -136,10 +161,24 @@ jobs:
             exit 0
           fi
 
-          rm -f src-tauri/target/release/bundle/appimage/*.AppImage
+          rm -f "$BUNDLE_DIR"/*.AppImage
           LD=$(find "$HOME/.cache/tauri" -name 'linuxdeploy-*.AppImage' -type f | head -1)
+          if [ -z "$LD" ]; then
+            echo "linuxdeploy is not in Tauri's cache — cannot repackage."
+            exit 1
+          fi
           chmod +x "$LD"
-          (cd src-tauri/target/release/bundle/appimage && "$LD" --appdir "$(basename "$APPDIR")" --output appimage)
+          "$LD" --appdir "$APPDIR" --output appimage
+
+          # linuxdeploy writes the AppImage into the working directory, not
+          # beside the AppDir, so move it back where the next step looks.
+          NEW=$(find . -maxdepth 1 -name '*.AppImage' -type f | head -1)
+          if [ -z "$NEW" ]; then
+            echo "Repackaging produced no AppImage."
+            exit 1
+          fi
+          mv "$NEW" "$BUNDLE_DIR"/
+          ls -la "$BUNDLE_DIR"
 
       # createUpdaterArtifacts is true in tauri.conf.json, which makes the build
       # demand TAURI_SIGNING_PRIVATE_KEY — a secret this fork does not have (the
