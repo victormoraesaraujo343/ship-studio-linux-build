@@ -91,6 +91,56 @@ jobs:
           pnpm tauri build --bundles appimage \
             --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
+      # linuxdeploy copies the binary's dependency closure into the AppDir,
+      # which sweeps up libraries that must never be bundled: the ones that talk
+      # to the host's GPU driver and kernel. An AppImage puts its own lib
+      # directory ahead of the system's, so a frozen copy of libwayland-egl
+      # shadows the host's and EGL fails to initialise:
+      #
+      #   Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...
+      #
+      # WebKit then aborts before painting, and the app opens as a white window
+      # on a machine whose driver is newer than the build host's. The same
+      # binary run unbundled is fine, which is what pins the cause on packaging
+      # rather than on the app.
+      #
+      # These come from the host at runtime or not at all. Removing them and
+      # repackaging is the only lever available — Tauri exposes no exclude list
+      # for the AppImage bundler.
+      - name: Unbundle host graphics libraries and repackage
+        env:
+          NO_STRIP: '1'
+          ARCH: x86_64
+        run: |
+          APPDIR=$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppDir' -type d | head -1)
+          if [ -z "$APPDIR" ]; then
+            echo "No AppDir found — the bundle step did not produce one."
+            exit 1
+          fi
+
+          REMOVED=0
+          for pattern in 'libwayland-egl.so*' 'libEGL.so*' 'libGL.so*' 'libGLX.so*' \
+                         'libgbm.so*' 'libdrm.so*' 'libGLdispatch.so*'; do
+            for f in $(find "$APPDIR/usr/lib" -maxdepth 1 -name "$pattern" 2>/dev/null); do
+              echo "Removing bundled $(basename "$f") — must come from the host"
+              rm -f "$f"
+              REMOVED=$((REMOVED + 1))
+            done
+          done
+
+          if [ "$REMOVED" -eq 0 ]; then
+            echo "Nothing to remove. Either linuxdeploy's behaviour changed or a"
+            echo "newer runner no longer pulls these in. Not an error, but the"
+            echo "smoke test below is now the only thing standing between a"
+            echo "blank window and a published release."
+            exit 0
+          fi
+
+          rm -f src-tauri/target/release/bundle/appimage/*.AppImage
+          LD=$(find "$HOME/.cache/tauri" -name 'linuxdeploy-*.AppImage' -type f | head -1)
+          chmod +x "$LD"
+          (cd src-tauri/target/release/bundle/appimage && "$LD" --appdir "$(basename "$APPDIR")" --output appimage)
+
       # createUpdaterArtifacts is true in tauri.conf.json, which makes the build
       # demand TAURI_SIGNING_PRIVATE_KEY — a secret this fork does not have (the
       # keypair belongs to upstream). Overriding it per-invocation above keeps
@@ -119,22 +169,73 @@ jobs:
       # A binary that cannot start is worth catching here rather than in a bug
       # report. xvfb gives it a display; the app is killed after it proves it
       # came up, since there is nothing to interact with headlessly.
-      - name: Smoke test — the AppImage starts
+      # An earlier version of this step only checked that the process was still
+      # alive after a timeout, and it passed a build that opened as a white
+      # window: WebKit aborted its renderer while the process stayed up. Staying
+      # up is necessary and nowhere near sufficient, so this checks three things
+      # — it survives, it says nothing fatal, and something was actually painted.
+      - name: Smoke test — the AppImage starts and renders
         run: |
-          sudo apt-get install -y xvfb
+          sudo apt-get install -y xvfb imagemagick
           chmod +x "${{ steps.appimage.outputs.path }}"
-          set +e
-          xvfb-run -a timeout 25 "./${{ steps.appimage.outputs.path }}" > smoke.log 2>&1
-          CODE=$?
-          set -e
+
+          Xvfb :99 -screen 0 1280x800x24 > /dev/null 2>&1 &
+          XVFB_PID=$!
+          export DISPLAY=:99
+          sleep 3
+
+          "./${{ steps.appimage.outputs.path }}" > smoke.log 2>&1 &
+          APP_PID=$!
+          sleep 25
+
+          echo "----- app output -----"
           cat smoke.log || true
-          # 124 = still running when timeout fired, which is what a healthy GUI
-          # app does. Anything else means it exited on its own — a crash.
-          if [ "$CODE" -ne 124 ]; then
-            echo "AppImage exited on its own with code $CODE — treating as a crash."
+          echo "----------------------"
+
+          FAILED=0
+
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            echo "FAIL: the app exited on its own."
+            FAILED=1
+          fi
+
+          # The renderer announces its own death before the process notices.
+          # These are the lines that preceded a white window in practice.
+          if grep -qE 'EGL_BAD|Could not create default EGL|Aborting\.\.\.|Failed to create GBM|cannot open shared object' smoke.log; then
+            echo "FAIL: a fatal graphics/runtime error was logged."
+            FAILED=1
+          fi
+
+          # A window that painted has many distinct colours; a blank one has
+          # essentially a single flat fill. This is the check that would have
+          # caught the white screen.
+          import -window root screenshot.png 2>/dev/null || true
+          if [ -f screenshot.png ]; then
+            COLORS=$(identify -format %k screenshot.png 2>/dev/null || echo 0)
+            echo "Distinct colours on screen: $COLORS"
+            if [ "$COLORS" -lt 5 ]; then
+              echo "FAIL: the screen is effectively blank — the window never painted."
+              FAILED=1
+            fi
+          else
+            echo "WARN: could not capture a screenshot; render was not verified."
+          fi
+
+          kill "$APP_PID" 2>/dev/null || true
+          kill "$XVFB_PID" 2>/dev/null || true
+
+          if [ "$FAILED" -ne 0 ]; then
             exit 1
           fi
-          echo "AppImage stayed up."
+          echo "AppImage started and painted a real window."
+
+      - name: Upload the smoke-test screenshot
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-screenshot
+          path: screenshot.png
+          if-no-files-found: warn
 
       - name: Attach the AppImage to the release
         uses: softprops/action-gh-release@v2
