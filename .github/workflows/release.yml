@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
       - '!*-win'
+      # Linux has its own workflow (release-linux.yml) and none of this one's
+      # credentials: no Apple certificate, no updater signing key, no PAT for
+      # the releases repo. Without this exclusion a -linux tag starts the macOS
+      # pipeline too, which then fails on the first secret it reaches.
+      - '!*-linux'
 
 jobs:
   # Run tests before building release artifacts
