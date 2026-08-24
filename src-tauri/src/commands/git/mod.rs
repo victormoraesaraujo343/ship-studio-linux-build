@@ -35,6 +35,37 @@ use tracing::{debug, error, info, instrument};
 /// generous but protects the UI/worker against an indefinitely-hanging remote.
 const GIT_NETWORK_TIMEOUT_SECS: u64 = 60;
 
+/// The `-c` options that force HTTPS credential resolution through `gh`, or
+/// nothing when it must not be forced.
+///
+/// Returned as data rather than pushed onto a `Command` so the two decisions
+/// that matter can be tested without a repo, a remote, or gh installed:
+/// whether a GitLab remote is left alone, and how the helper path is quoted.
+fn credential_helper_args(gh: Option<&std::path::Path>, is_gitlab: bool) -> Vec<String> {
+    // A GitLab remote must keep git's native credential resolution: `gh auth
+    // git-credential` only knows GitHub hosts and `glab` has no credential
+    // helper to swap in, so clearing the native helper here would leave a
+    // GitLab HTTPS push with no credentials at all — a hard failure under
+    // GIT_TERMINAL_PROMPT=0 rather than a prompt.
+    let Some(gh) = gh.filter(|_| !is_gitlab) else {
+        return Vec::new();
+    };
+
+    vec![
+        // Clear any inherited helper (e.g. osxkeychain) first, so a globally
+        // cached credential can't shadow gh.
+        "-c".to_string(),
+        "credential.helper=".to_string(),
+        "-c".to_string(),
+        // Git hands a `!`-prefixed helper to `sh -c`, which word-splits on
+        // spaces — so the path must be quoted or a default Windows install
+        // (`C:\Program Files\GitHub CLI\gh.exe`) becomes the command
+        // `C:\Program` (issue #265). Single quotes keep backslashes literal
+        // under POSIX sh.
+        format!("credential.helper=!'{}' auth git-credential", gh.display()),
+    ]
+}
+
 /// Run a git command that touches the network (fetch / pull / push), scoped to
 /// the workspace the project at `cwd` belongs to.
 ///
@@ -82,16 +113,8 @@ pub(crate) async fn run_git_net(
         Ok(Some(crate::commands::git_provider::GitProvider::GitLab))
     );
 
-    if let Some(gh) = find_executable("gh").filter(|_| !is_gitlab) {
-        cmd.arg("-c").arg("credential.helper=");
-        // Git hands a `!`-prefixed helper to `sh -c`, which word-splits on
-        // spaces — so the path must be quoted or a default Windows install
-        // (`C:\Program Files\GitHub CLI\gh.exe`) becomes the command `C:\Program`
-        // (issue #265). Single quotes keep backslashes literal under POSIX sh.
-        cmd.arg("-c").arg(format!(
-            "credential.helper=!'{}' auth git-credential",
-            gh.display()
-        ));
+    for arg in credential_helper_args(find_executable("gh").as_deref(), is_gitlab) {
+        cmd.arg(arg);
     }
 
     cmd.args(args)
@@ -619,6 +642,44 @@ pub async fn init_git_repo(project_path: String) -> Result<(), CommandError> {
 
 #[cfg(test)]
 mod tests {
+    use super::credential_helper_args;
+    use std::path::Path;
+
+    // The bug this guards: forcing gh's credential helper on a GitLab remote
+    // clears git's native resolution and puts nothing usable in its place, so
+    // an HTTPS GitLab push fails outright instead of authenticating.
+    #[test]
+    fn a_gitlab_remote_keeps_gits_native_credential_resolution() {
+        assert!(credential_helper_args(Some(Path::new("/usr/bin/gh")), true).is_empty());
+    }
+
+    #[test]
+    fn a_github_remote_routes_through_gh() {
+        let args = credential_helper_args(Some(Path::new("/usr/bin/gh")), false);
+        assert_eq!(args[0], "-c");
+        assert_eq!(args[1], "credential.helper=");
+        assert_eq!(args[2], "-c");
+        assert!(args[3].contains("auth git-credential"), "got: {}", args[3]);
+    }
+
+    #[test]
+    fn without_gh_nothing_is_forced() {
+        assert!(credential_helper_args(None, false).is_empty());
+    }
+
+    // A Windows default install lives under `C:\Program Files\...`; git hands
+    // a `!` helper to `sh -c`, which would split that at the space (issue #265).
+    #[test]
+    fn a_helper_path_with_spaces_stays_one_word() {
+        let gh = Path::new(r"C:\Program Files\GitHub CLI\gh.exe");
+        let args = credential_helper_args(Some(gh), false);
+        assert!(
+            args[3].contains(r"!'C:\Program Files\GitHub CLI\gh.exe'"),
+            "helper path not quoted: {}",
+            args[3]
+        );
+    }
+
     use super::*;
     use std::process::Command;
     use tempfile::TempDir;
