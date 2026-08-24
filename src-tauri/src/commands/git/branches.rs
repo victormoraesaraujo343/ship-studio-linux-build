@@ -230,6 +230,45 @@ pub async fn get_current_branch(project_path: String) -> Result<String, CommandE
     Ok(branch)
 }
 
+/// Turn a failed `git switch` stderr into something the user can act on.
+///
+/// Split out from the switch path so the mappings can be tested without a repo.
+fn map_switch_error(stderr: &str) -> String {
+    // `switch` arrived in git 2.23 and `--end-of-options` in 2.24. Below that,
+    // git reports an unknown subcommand or an unknown option rather than
+    // anything about versions (issue #364).
+    if stderr.contains("is not a git command") || stderr.contains("unknown option") {
+        // Remediation must match the OS the app is running on — telling a
+        // Windows user to `brew install git` is a dead end (issue #513).
+        let remediation = if cfg!(target_os = "windows") {
+            "run `winget install --id Git.Git` or download the installer from \
+             git-scm.com/download/win"
+        } else if cfg!(target_os = "linux") {
+            "install it with your distribution's package manager (e.g. `apt install git`, \
+             `dnf install git`, or `pacman -S git`)"
+        } else {
+            "update the Xcode Command Line Tools or run `brew install git`"
+        };
+        return format!(
+            "Your installed Git is too old for Ship Studio (Git 2.24 from 2019 or newer \
+             is required). Update Git — {remediation} — then try again."
+        );
+    }
+
+    // An abandoned merge left unmerged entries in the index — the
+    // conflict-resolution flow deliberately leaves git mid-merge, and closing it
+    // without finishing strands the repo there. Git's raw "you need to resolve
+    // your current index first" says nothing a user can act on (issue #417).
+    if stderr.contains("resolve your current index first") || stderr.contains("needs merge") {
+        return "A merge with unresolved conflicts is still in progress in this project. Finish \
+                resolving the conflicts (or discard the merge) before switching branches — the \
+                Resolve Conflicts flow will pick up where it left off."
+            .to_string();
+    }
+
+    stderr.to_string()
+}
+
 /// Switch to a different branch
 #[tauri::command]
 #[instrument(name = "switch_branch", skip(project_path), fields(project = %project_path, target_branch = %branch_name))]
@@ -302,8 +341,13 @@ pub async fn switch_branch(
     }
 
     // Try to checkout the branch
+    // `switch`, not `checkout`: `git checkout --end-of-options <branch>` does not
+    // work — checkout resolves `--end-of-options` as a pathspec and fails on
+    // every branch, on current git as much as on old git (verified on 2.43).
+    // `switch` does accept it, keeps the `-`-leading-ref guard the flag is there
+    // for, and refuses pathspecs by design. Every caller passes a branch name.
     let mut checkout_cmd = crate::utils::git_command_in(&validated_path)?;
-    checkout_cmd.args(["checkout", "--end-of-options", &branch_name]);
+    checkout_cmd.args(["switch", "--end-of-options", &branch_name]);
     let checkout_output =
         crate::external_command::spawn_with_pressure_retry("git checkout", || {
             checkout_cmd.output()
@@ -327,40 +371,7 @@ pub async fn switch_branch(
         }
 
         let stderr = String::from_utf8_lossy(&checkout_output.stderr);
-        // Pre-2.24 git doesn't understand the `--end-of-options` injection
-        // guard and fails resolving it as a pathspec — turn that confusing
-        // two-line error into a clear "your git is too old" (issue #364).
-        let error_message = if stderr.contains("pathspec '--end-of-options'") {
-            // Remediation must match the OS the app is running on — telling a
-            // Windows user to `brew install git` is a dead end (issue #513).
-            let remediation = if cfg!(target_os = "windows") {
-                "run `winget install --id Git.Git` or download the installer from \
-                 git-scm.com/download/win"
-            } else if cfg!(target_os = "linux") {
-                "install it with your distribution's package manager (e.g. `apt install git`, \
-                 `dnf install git`, or `pacman -S git`)"
-            } else {
-                "update the Xcode Command Line Tools or run `brew install git`"
-            };
-            format!(
-                "Your installed Git is too old for Ship Studio (Git 2.24 from 2019 or newer \
-                 is required). Update Git — {remediation} — then try again."
-            )
-        } else if stderr.contains("resolve your current index first")
-            || stderr.contains("needs merge")
-        {
-            // An abandoned merge left unmerged entries in the index — the
-            // conflict-resolution flow deliberately leaves git mid-merge, and
-            // closing it without finishing strands the repo there. Git's raw
-            // "you need to resolve your current index first" says nothing a
-            // user can act on (issue #417).
-            "A merge with unresolved conflicts is still in progress in this project. Finish \
-             resolving the conflicts (or discard the merge) before switching branches — the \
-             Resolve Conflicts flow will pick up where it left off."
-                .to_string()
-        } else {
-            stderr.to_string()
-        };
+        let error_message = map_switch_error(&stderr);
         return Ok(SwitchResult {
             success: false,
             stashed_changes: false,
@@ -785,6 +796,38 @@ pub async fn delete_branch(
 
 #[cfg(test)]
 mod tests {
+    use super::map_switch_error;
+
+    #[test]
+    fn old_git_without_switch_is_named_as_a_version_problem() {
+        let msg = map_switch_error("git: 'switch' is not a git command. See 'git --help'.");
+        assert!(msg.contains("too old"), "got: {msg}");
+        assert!(msg.contains("2.24"), "got: {msg}");
+    }
+
+    #[test]
+    fn old_git_without_end_of_options_is_named_as_a_version_problem() {
+        let msg = map_switch_error("error: unknown option `end-of-options'");
+        assert!(msg.contains("too old"), "got: {msg}");
+    }
+
+    #[test]
+    fn an_unfinished_merge_is_explained_not_echoed() {
+        let msg = map_switch_error("error: you need to resolve your current index first");
+        assert!(msg.contains("unresolved conflicts"), "got: {msg}");
+        assert!(!msg.contains("index first"), "raw git text leaked: {msg}");
+    }
+
+    // The bug this replaced: `checkout --end-of-options` fails on EVERY branch,
+    // and its pathspec error was read as "your git is too old" — advice that
+    // could never work, since updating git does not make checkout accept the
+    // flag. A stray pathspec error must now pass through as itself.
+    #[test]
+    fn a_pathspec_error_is_no_longer_blamed_on_the_git_version() {
+        let msg = map_switch_error("error: pathspec 'nope' did not match any file(s) known to git");
+        assert!(!msg.contains("too old"), "got: {msg}");
+    }
+
     use super::{is_missing_base_ref_error, is_worktree_delete_refusal};
 
     // The #562 shape: deleting a branch that another worktree has checked out.
