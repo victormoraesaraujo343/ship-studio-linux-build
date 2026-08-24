@@ -4,7 +4,9 @@
 //! Events are sent to PostHog via the HTTP capture API from the Rust backend,
 //! keeping the API key out of the frontend webview.
 //!
-//! Users can opt out via the `set_analytics_enabled` command.
+//! This fork ships analytics OFF by default: the upstream PostHog key and the
+//! upstream error-report endpoint are not this fork's to send to. Opt IN via the
+//! `set_analytics_enabled` command.
 
 use crate::commands::setup::{read_app_state, write_app_state};
 use crate::errors::CommandError;
@@ -45,7 +47,7 @@ pub fn init_analytics() {
         }
     };
 
-    let enabled = app_state.analytics_enabled.unwrap_or(true);
+    let enabled = app_state.analytics_enabled.unwrap_or(false);
 
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -276,7 +278,7 @@ pub fn get_analytics_enabled() -> Result<bool, CommandError> {
         .lock()
         .ok()
         .and_then(|g| g.as_ref().map(|c| c.enabled))
-        .unwrap_or(true);
+        .unwrap_or(false);
     Ok(enabled)
 }
 

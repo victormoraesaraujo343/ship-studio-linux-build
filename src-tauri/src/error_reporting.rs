@@ -51,7 +51,7 @@ fn enabled() -> bool {
     // (frontend or backend) funnels through here.
     crate::commands::setup::read_app_state()
         .analytics_enabled
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn secret() -> Option<&'static str> {

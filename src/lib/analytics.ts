@@ -163,7 +163,7 @@ export async function getAnalyticsEnabled(): Promise<boolean> {
   try {
     return await invoke<boolean>('get_analytics_enabled');
   } catch {
-    return true; // Default to enabled
+    return false; // Default to disabled in this fork
   }
 }
 

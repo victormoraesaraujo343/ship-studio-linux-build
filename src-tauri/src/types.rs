@@ -847,7 +847,7 @@ pub struct AppState {
     /// Unique device identifier for anonymous analytics (generated on first launch)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
-    /// Whether anonymous analytics are enabled (defaults to true)
+    /// Whether anonymous analytics are enabled (defaults to false in this fork)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analytics_enabled: Option<bool>,
     /// Whether the GitHub contribution calendar is hidden on the dashboard
