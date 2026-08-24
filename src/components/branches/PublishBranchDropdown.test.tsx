@@ -6,13 +6,23 @@
  * "Go Live". That label churn was a real UX complaint; these tests pin it.
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { PublishBranchDropdown } from './PublishBranchDropdown';
 import type { ProjectGitHubStatus } from '../../lib/github';
+import { listProjectRemotes, getProjectRemote, setProjectRemote } from '../../lib/git';
 
 vi.mock('../../lib/branches', () => ({
   publishBranch: vi.fn().mockResolvedValue({ state: 'PUSHED', url: null }),
+}));
+
+// The panel reads the project's remotes when it opens. A single remote is the
+// shape these tests describe — the picker only appears when there's a choice,
+// so mocking one keeps it hidden and leaves this file about push terminology.
+vi.mock('../../lib/git', () => ({
+  listProjectRemotes: vi.fn().mockResolvedValue(['origin']),
+  getProjectRemote: vi.fn().mockResolvedValue('origin'),
+  setProjectRemote: vi.fn().mockResolvedValue(undefined),
 }));
 
 const connectedStatus = {
@@ -113,5 +123,59 @@ describe('PublishBranchDropdown open panel', () => {
 
     expect(screen.getByText(/Nothing to push/i)).toBeInTheDocument();
     expectNoBannedLabels();
+  });
+});
+
+describe('PublishBranchDropdown remote picker', () => {
+  beforeEach(() => {
+    vi.mocked(listProjectRemotes).mockResolvedValue(['origin']);
+    vi.mocked(getProjectRemote).mockResolvedValue('origin');
+    vi.mocked(setProjectRemote).mockClear();
+  });
+
+  // One remote is not a choice — offering a single-option dropdown would imply
+  // a decision the user does not have.
+  it('stays hidden when the project has a single remote', async () => {
+    render(<PublishBranchDropdown {...makeProps()} />);
+    fireEvent.click(screen.getByText('Push'));
+
+    await waitFor(() => expect(listProjectRemotes).toHaveBeenCalledWith('/test/path'));
+    expect(screen.queryByLabelText('Push to')).not.toBeInTheDocument();
+  });
+
+  it('offers every remote once there is more than one', async () => {
+    vi.mocked(listProjectRemotes).mockResolvedValue(['origin', 'demo']);
+    render(<PublishBranchDropdown {...makeProps()} />);
+    fireEvent.click(screen.getByText('Push'));
+
+    const select = await screen.findByLabelText<HTMLSelectElement>('Push to');
+    expect(select.value).toBe('origin');
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['origin', 'demo']);
+  });
+
+  it('records the chosen remote', async () => {
+    vi.mocked(listProjectRemotes).mockResolvedValue(['origin', 'demo']);
+    render(<PublishBranchDropdown {...makeProps()} />);
+    fireEvent.click(screen.getByText('Push'));
+
+    const select = await screen.findByLabelText('Push to');
+    fireEvent.change(select, { target: { value: 'demo' } });
+
+    await waitFor(() => expect(setProjectRemote).toHaveBeenCalledWith('/test/path', 'demo'));
+  });
+
+  // A rejected write must not leave the UI claiming a remote the backend
+  // refused — the picker showing 'demo' while pushes still go to origin is
+  // exactly the silent lie this whole change set exists to remove.
+  it('reverts the selection when the backend rejects it', async () => {
+    vi.mocked(listProjectRemotes).mockResolvedValue(['origin', 'demo']);
+    vi.mocked(setProjectRemote).mockRejectedValue(new Error('not a remote'));
+    render(<PublishBranchDropdown {...makeProps()} />);
+    fireEvent.click(screen.getByText('Push'));
+
+    const select = await screen.findByLabelText<HTMLSelectElement>('Push to');
+    fireEvent.change(select, { target: { value: 'demo' } });
+
+    await waitFor(() => expect(select.value).toBe('origin'));
   });
 });
