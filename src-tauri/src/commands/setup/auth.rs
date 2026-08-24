@@ -217,9 +217,7 @@ pub fn cleanup_auth_processes_sync() -> u32 {
         #[cfg(unix)]
         {
             // Send SIGTERM for graceful shutdown
-            let _ = create_command("kill")
-                .args(["-TERM", &pid.to_string()])
-                .output();
+            let _ = crate::utils::signal_pid(pid, "-TERM");
         }
 
         #[cfg(windows)]

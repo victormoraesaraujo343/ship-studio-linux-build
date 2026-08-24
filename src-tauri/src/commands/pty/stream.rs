@@ -58,9 +58,7 @@ pub fn kill_window_pty_sync(window_label: &str) -> u32 {
     for (id, pid) in &pids_to_kill {
         #[cfg(unix)]
         {
-            let _ = create_command("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            let _ = crate::utils::signal_pid(*pid, "-9");
         }
 
         #[cfg(windows)]
@@ -105,9 +103,7 @@ pub async fn kill_window_pty(window_label: String) -> Result<u32, CommandError> 
     for (id, pid) in &pids_to_kill {
         #[cfg(unix)]
         {
-            let _ = create_command("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            let _ = crate::utils::signal_pid(*pid, "-9");
         }
 
         #[cfg(windows)]
@@ -152,9 +148,7 @@ pub fn kill_project_pty_internal(project_path: &str) -> u32 {
     for (id, pid) in &pids_to_kill {
         #[cfg(unix)]
         {
-            let _ = create_command("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            let _ = crate::utils::signal_pid(*pid, "-9");
         }
 
         #[cfg(windows)]
@@ -222,9 +216,7 @@ pub fn kill_all_pty_sync() -> u32 {
     for (_id, pid) in &pids {
         #[cfg(unix)]
         {
-            let _ = create_command("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            let _ = crate::utils::signal_pid(*pid, "-9");
         }
 
         #[cfg(windows)]
@@ -260,9 +252,7 @@ pub async fn kill_all_pty() -> Result<u32, CommandError> {
     for (_id, pid) in pids {
         #[cfg(unix)]
         {
-            let _ = create_command("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            let _ = crate::utils::signal_pid(pid, "-9");
         }
 
         #[cfg(windows)]
@@ -425,9 +415,9 @@ fn kill_listener_and_group(pid: i32) {
             let _ = create_command("kill").args(["-9", &group]).output();
         }
         _ => {
-            let _ = create_command("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            // pid comes from a port lookup as i32; a non-positive value is not a
+            // process we can mean, and signal_pid rejects 0/1 besides.
+            let _ = u32::try_from(pid).map(|p| crate::utils::signal_pid(p, "-9"));
         }
     }
 }

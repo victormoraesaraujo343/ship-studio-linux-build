@@ -252,6 +252,13 @@ pub fn register_external_pty(
     description: String,
     project_path: Option<String>,
 ) -> Result<(), CommandError> {
+    // The pid crosses from the frontend, and everything in this registry is
+    // signalled on shutdown. 0 and 1 are not processes we could mean — 0 is our
+    // own process group, which on a desktop session is the whole login.
+    if pid <= 1 {
+        return Err(format!("refusing to register PTY with pid {pid}").into());
+    }
+
     if let Ok(mut registry) = PTY_REGISTRY.lock() {
         registry.insert(
             pty_id,

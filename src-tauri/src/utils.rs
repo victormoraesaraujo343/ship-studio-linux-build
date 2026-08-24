@@ -19,6 +19,39 @@ pub fn create_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
     cmd
 }
 
+/// Send `signal` to exactly one process, refusing the pids that don't mean
+/// "one process" to kill(2).
+///
+/// `kill(0, sig)` signals EVERY process in the *caller's* process group, and
+/// pid 1 is init. That distinction is not academic here: a Linux desktop puts
+/// every app launched from its menu into one process group shared with the
+/// shell that launched it, so on a stock GNOME session that group holds the
+/// compositor, Xwayland and every other running app. One stray `kill -9 0` from
+/// this app therefore ends the user's entire login session — every window
+/// closes, and whatever a killed settings daemon hadn't flushed yet is lost.
+///
+/// Callers legitimately hold pids we never learned (a PTY child whose id the
+/// backend can't report is recorded as 0), and the shutdown path signals every
+/// pid it has, so the guard belongs here rather than repeated at each call
+/// site. Returns whether the signal was actually sent.
+#[cfg(unix)]
+pub fn signal_pid(pid: u32, signal: &str) -> bool {
+    if pid <= 1 {
+        tracing::warn!(
+            pid,
+            signal,
+            "refusing to signal this pid: 0 would hit our own process group \
+             (the whole desktop session), 1 is init"
+        );
+        return false;
+    }
+    create_command("kill")
+        .args([signal, &pid.to_string()])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
 /// Returns the platform-specific PATH separator (`:` for Unix, `;` for Windows)
 fn get_path_separator() -> &'static str {
     if cfg!(windows) {
@@ -2712,6 +2745,34 @@ mod tests {
                 result.is_err(),
                 "symlinked final component must be rejected, got {result:?}"
             );
+        }
+    }
+
+    mod signals {
+        use super::super::signal_pid;
+
+        #[test]
+        #[cfg(unix)]
+        fn signal_pid_refuses_pid_zero() {
+            // kill(2) reads 0 as "every process in our own process group". On a
+            // desktop session that group is the whole login — compositor,
+            // Xwayland, every other app. This must never leave the guard.
+            assert!(!signal_pid(0, "-9"));
+        }
+
+        #[test]
+        #[cfg(unix)]
+        fn signal_pid_refuses_init() {
+            assert!(!signal_pid(1, "-9"));
+        }
+
+        #[test]
+        #[cfg(unix)]
+        fn signal_pid_probes_a_real_process() {
+            // Our own pid is signalable, and "-0" only probes.
+            let me = std::process::id();
+            assert!(me > 1, "test harness pid should be a real pid");
+            assert!(signal_pid(me, "-0"));
         }
     }
 

@@ -332,7 +332,13 @@ pub async fn pty_session_open(
             crate::errors::CommandError::from(message)
         }
     })?;
-    let pid = child.process_id().unwrap_or(0);
+    // 0 is not a pid — it means "our own process group" to kill(2), and this
+    // session's pid is later handed to the shutdown killer. Keep recording it so
+    // the rest of the struct is unchanged, but say so: signal_pid refuses it.
+    let pid = child.process_id().unwrap_or_else(|| {
+        tracing::warn!("PTY child reported no pid; it cannot be signalled on shutdown");
+        0
+    });
     let child_killer = child.clone_killer();
 
     let session = Arc::new(Session {
@@ -585,9 +591,7 @@ pub fn kill_all_sessions_sync() -> u32 {
         let pid = session.pid.to_string();
 
         #[cfg(unix)]
-        let _ = crate::utils::create_command("kill")
-            .args(["-9", &pid])
-            .output();
+        let _ = crate::utils::signal_pid(session.pid, "-9");
 
         #[cfg(windows)]
         let _ = crate::utils::create_command("taskkill")

@@ -2052,12 +2052,11 @@ fn kill_process_on_port_sync(port: u16) {
         return;
     };
     for pid in String::from_utf8_lossy(&out.stdout).split_whitespace() {
-        // lsof -ti emits bare PIDs; validate before handing to `kill`.
-        if pid.parse::<i32>().is_ok() {
-            let _ = create_command("kill")
-                .args(["-9", pid])
-                .env("PATH", get_extended_path())
-                .output();
+        // lsof -ti emits bare PIDs; validate before handing to `kill`. Parsing
+        // as i32 accepted "0" and "-1" — both of which kill(2) reads as a whole
+        // group of processes rather than the one we mean.
+        if let Ok(pid) = pid.parse::<u32>() {
+            let _ = crate::utils::signal_pid(pid, "-9");
         }
     }
 }

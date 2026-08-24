@@ -39,12 +39,10 @@ pub(super) static PTY_REGISTRY: LazyLock<Mutex<HashMap<u32, PtyInfo>>> =
 /// Check if a process with the given PID is still running
 #[cfg(unix)]
 pub(super) fn is_process_running(pid: u32) -> bool {
-    // kill -0 checks if process exists without actually sending a signal
-    create_command("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    // kill -0 checks if process exists without actually sending a signal.
+    // signal_pid refuses pid 0/1, which also stops a bogus 0 from reporting
+    // itself "running" forever (kill -0 0 succeeds — it probes our own group).
+    crate::utils::signal_pid(pid, "-0")
 }
 
 /// Kill a process by PID with graceful shutdown
@@ -52,9 +50,7 @@ pub(super) fn kill_process(pid: u32) {
     #[cfg(unix)]
     {
         // Send SIGTERM first for graceful shutdown
-        let _ = create_command("kill")
-            .args(["-TERM", &pid.to_string()])
-            .output();
+        let _ = crate::utils::signal_pid(pid, "-TERM");
 
         // Wait up to 2 seconds for graceful termination, checking every 100ms
         let max_wait_ms = 2000;
@@ -73,9 +69,7 @@ pub(super) fn kill_process(pid: u32) {
 
         // Force kill if still running after grace period
         if is_process_running(pid) {
-            let _ = create_command("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            let _ = crate::utils::signal_pid(pid, "-9");
         }
     }
 
