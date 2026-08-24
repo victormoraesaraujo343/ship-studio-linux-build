@@ -9,7 +9,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { ModalFrame } from '../primitives/ModalFrame';
 import { Button } from '../primitives/Button';
 import { Spinner } from '../primitives/Spinner';
-import { GitHubIcon, VercelIcon } from '../icons';
+import { GitHubIcon, GitLabIcon, VercelIcon } from '../icons';
 import { useWorkspaceConnect, type ConnectServiceId } from '../../hooks/useWorkspaceConnect';
 import { useOptionalToast } from '../../contexts/ToastContext';
 import {
@@ -251,6 +251,12 @@ export function AccountSettingsModal({
                         label: 'GitHub',
                         icon: <GitHubIcon size={16} />,
                         identity: credStatus?.githubAuthEmail ?? null,
+                      },
+                      {
+                        id: 'gitlab' as ConnectServiceId,
+                        label: 'GitLab',
+                        icon: <GitLabIcon size={16} />,
+                        identity: credStatus?.gitlabAuthUsername ?? null,
                       },
                       {
                         id: 'vercel' as ConnectServiceId,

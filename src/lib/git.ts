@@ -92,3 +92,35 @@ export async function commitChanges(projectPath: string, message: string): Promi
 export async function stashChanges(projectPath: string): Promise<boolean> {
   return invoke<boolean>('stash_changes', { projectPath });
 }
+
+// ============ Remotes ============
+
+/**
+ * Remote names configured for this project, in git's own order.
+ *
+ * Empty when the repo has no remotes or the path isn't a repository — both mean
+ * "nothing to choose from", so callers should hide the picker rather than show
+ * an empty one.
+ */
+export async function listProjectRemotes(projectPath: string): Promise<string[]> {
+  return invoke<string[]>('list_project_remotes', { projectPath });
+}
+
+/**
+ * The remote this project's pushes and fetches actually target.
+ *
+ * Already resolved through the backend's fallbacks, so this is the name git
+ * will be given — not a stored preference that may point at a remote the repo
+ * no longer has.
+ */
+export async function getProjectRemote(projectPath: string): Promise<string> {
+  return invoke<string>('get_project_remote', { projectPath });
+}
+
+/**
+ * Choose which remote this project uses. Rejected by the backend if the name
+ * isn't one of the repo's remotes.
+ */
+export async function setProjectRemote(projectPath: string, remote: string): Promise<void> {
+  return invoke<void>('set_project_remote', { projectPath, remote });
+}

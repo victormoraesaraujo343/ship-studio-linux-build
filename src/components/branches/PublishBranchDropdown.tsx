@@ -19,6 +19,8 @@ import { logger } from '../../lib/logger';
 import { trackEvent, trackError } from '../../lib/analytics';
 import { useOptionalToast } from '../../contexts/ToastContext';
 import { asCommandError, formatCommandError } from '../../lib/errors';
+import { listProjectRemotes, getProjectRemote, setProjectRemote } from '../../lib/git';
+import { providerTerms } from '../../lib/gitProvider';
 
 // Module-scoped so the metric spans dropdown re-mounts. Per-project would be
 // better but cross-project publish cadence is also useful and far simpler.
@@ -211,6 +213,50 @@ export function PublishBranchDropdown({
     }
   };
 
+  // Which remote this project publishes to. Only worth showing when there is a
+  // real choice — a repo with one remote gains nothing from a one-item picker.
+  const [remotes, setRemotes] = useState<string[]>([]);
+  const [activeRemote, setActiveRemote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !projectPath) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [list, current] = await Promise.all([
+          listProjectRemotes(projectPath),
+          getProjectRemote(projectPath),
+        ]);
+        if (cancelled) return;
+        setRemotes(list);
+        setActiveRemote(current);
+      } catch (error) {
+        // A repo with no remotes is the common cause; the picker just stays
+        // hidden rather than surfacing an error for a state that is normal.
+        logger.warn('[PublishBranchDropdown] could not read remotes', {
+          error: formatCommandError(asCommandError(error)),
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, projectPath]);
+
+  const handleRemoteChange = async (next: string) => {
+    const previous = activeRemote;
+    setActiveRemote(next);
+    try {
+      await setProjectRemote(projectPath, next);
+      void trackEvent('publish_remote_changed', { remote_count: remotes.length });
+    } catch (error) {
+      setActiveRemote(previous);
+      showToast(formatCommandError(asCommandError(error)), 'error');
+    }
+  };
+
+  const terms = providerTerms(projectGithubStatus?.provider);
+
   const handleDone = () => {
     setIsOpen(false);
     setPublishState({ status: 'idle' });
@@ -267,6 +313,26 @@ export function PublishBranchDropdown({
 
       {isOpen && (
         <div className="publish-dropdown-menu">
+          {remotes.length > 1 && (
+            <div className="publish-remote-row">
+              <label className="publish-remote-label" htmlFor="publish-remote-select">
+                Push to
+              </label>
+              <select
+                id="publish-remote-select"
+                className="publish-remote-select"
+                value={activeRemote ?? ''}
+                onChange={(e) => void handleRemoteChange(e.target.value)}
+                disabled={isPublishing}
+              >
+                {remotes.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {/* Success State */}
           {publishState.status === 'success' && (
             <>
@@ -276,7 +342,7 @@ export function PublishBranchDropdown({
               </div>
               {!isMainBranch && (
                 <div className="publish-branch-hint">
-                  Your changes are on the <strong>{currentBranch}</strong> branch on GitHub.
+                  Your changes are on the <strong>{currentBranch}</strong> branch on {terms.name}.
                   {onCreatePR && (
                     <>
                       {' '}

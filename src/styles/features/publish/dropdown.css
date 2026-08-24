@@ -76,6 +76,43 @@
   overflow: hidden;
 }
 
+/* Remote picker — only rendered when the project has more than one remote, so
+   it reads as a real choice rather than a decorative label. Sits above the rest
+   of the menu because it qualifies every action below it. */
+.publish-remote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-tertiary, var(--bg-secondary));
+}
+
+.publish-remote-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.publish-remote-select {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.publish-remote-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .publish-loading {
   display: flex;
   align-items: center;

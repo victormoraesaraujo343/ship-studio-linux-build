@@ -134,6 +134,7 @@ pub async fn publish_to_github(
     commit_message: Option<String>,
 ) -> Result<(), CommandError> {
     let validated_path = validate_project_path(&project_path).map_err(CommandError::from)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
     let message = resolve_commit_message(&validated_path, commit_message).await;
     info!(message = %message, "Publishing to GitHub");
 
@@ -154,7 +155,7 @@ pub async fn publish_to_github(
 
     // Pull latest changes first (rebase to keep history clean)
     let pull_output = run_git_net(
-        &["pull", "--rebase", "origin", &branch],
+        &["pull", "--rebase", &remote, &branch],
         &validated_path,
         "pull --rebase",
     )
@@ -191,7 +192,7 @@ pub async fn publish_to_github(
     git_stage_and_commit(&validated_path, &message).map_err(CommandError::from)?;
 
     // Push to origin
-    let output = run_git_net(&["push", "-u", "origin", &branch], &validated_path, "push").await?;
+    let output = run_git_net(&["push", "-u", &remote, &branch], &validated_path, "push").await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -236,6 +237,7 @@ pub async fn publish_to_staging(
     commit_message: Option<String>,
 ) -> Result<PublishResult, CommandError> {
     let validated_path = validate_project_path(&project_path).map_err(CommandError::from)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
     let message = resolve_commit_message(&validated_path, commit_message).await;
     info!(message = %message, "Publishing to staging");
 
@@ -250,7 +252,7 @@ pub async fn publish_to_staging(
     // Push to staging branch - Vercel auto-deploys via GitHub integration
     // Note: Using regular push instead of force push to avoid overwriting others' work
     let push_output = run_git_net(
-        &["push", "-u", "origin", "HEAD:staging"],
+        &["push", "-u", &remote, "HEAD:staging"],
         &validated_path,
         "push staging",
     )
@@ -314,6 +316,7 @@ pub async fn publish_to_production(
     commit_message: Option<String>,
 ) -> Result<PublishResult, CommandError> {
     let validated_path = validate_project_path(&project_path).map_err(CommandError::from)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
     let message = resolve_commit_message(&validated_path, commit_message).await;
     info!(message = %message, "Publishing to production");
 
@@ -325,7 +328,7 @@ pub async fn publish_to_production(
 
     // Push to main branch - Vercel auto-deploys to production via GitHub integration
     let push_output = run_git_net(
-        &["push", "-u", "origin", "HEAD:main"],
+        &["push", "-u", &remote, "HEAD:main"],
         &validated_path,
         "push main",
     )
@@ -377,6 +380,7 @@ pub async fn publish_branch(
     commit_message: Option<String>,
 ) -> Result<PublishResult, CommandError> {
     let validated_path = validate_project_path(&project_path).map_err(CommandError::from)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
     let message = resolve_commit_message(&validated_path, commit_message).await;
 
     // Get current branch name
@@ -401,7 +405,7 @@ pub async fn publish_branch(
 
     // Push to origin
     let push_output =
-        run_git_net(&["push", "-u", "origin", &branch], &validated_path, "push").await?;
+        run_git_net(&["push", "-u", &remote, &branch], &validated_path, "push").await?;
 
     if !push_output.status.success() {
         let stderr = String::from_utf8_lossy(&push_output.stderr);

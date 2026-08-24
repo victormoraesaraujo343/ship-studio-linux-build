@@ -253,12 +253,13 @@ pub async fn get_file_diff(
 #[tracing::instrument(fields(project = %project_path))]
 pub async fn get_branch_status(project_path: String) -> Result<BranchStatus, CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
 
     // Check for local changes (tracked files only)
     let local_changes = git_has_uncommitted_changes(&validated_path)?;
 
     // Fetch latest from origin (log errors but don't fail)
-    match run_git_net(&["fetch", "origin"], &validated_path, "fetch origin").await {
+    match run_git_net(&["fetch", &remote], &validated_path, "fetch remote").await {
         Ok(output) if !output.status.success() => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Don't log if it's just a network issue or no remote
@@ -276,7 +277,7 @@ pub async fn get_branch_status(project_path: String) -> Result<BranchStatus, Com
 
     // Check if staging branch exists on remote
     let staging_check = crate::utils::git_command_in(&validated_path)?
-        .args(["ls-remote", "--heads", "origin", "staging"])
+        .args(["ls-remote", "--heads", &remote, "staging"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -339,6 +340,7 @@ pub async fn get_branch_status(project_path: String) -> Result<BranchStatus, Com
 #[tracing::instrument(fields(project = %project_path))]
 pub async fn reset_to_branch(project_path: String, branch: String) -> Result<(), CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
 
     let remote_branch = match branch.as_str() {
         "staging" => "origin/staging",
@@ -347,7 +349,7 @@ pub async fn reset_to_branch(project_path: String, branch: String) -> Result<(),
     };
 
     // Fetch latest from remote first
-    let fetch = run_git_net(&["fetch", "origin"], &validated_path, "fetch origin").await?;
+    let fetch = run_git_net(&["fetch", &remote], &validated_path, "fetch remote").await?;
 
     if !fetch.status.success() {
         return Err("Failed to fetch from remote".to_string().into());

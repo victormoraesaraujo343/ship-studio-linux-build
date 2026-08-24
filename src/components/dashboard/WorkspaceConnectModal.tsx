@@ -22,6 +22,11 @@ const SERVICE_META: Record<WorkspaceConnectService, { label: string; instruction
     instructions:
       'A browser window will open — authorize there, then return here. This finishes on its own when you’re signed in.',
   },
+  gitlab: {
+    label: 'GitLab',
+    instructions:
+      'The terminal will ask which GitLab instance to use — pick gitlab.com or type your company’s host — then follow the sign-in prompts.',
+  },
   codex: {
     label: 'Codex',
     instructions:

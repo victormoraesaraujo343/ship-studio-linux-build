@@ -304,13 +304,15 @@ pub async fn get_project_github_status(project_path: String) -> ProjectGitHubSta
     let total_start = std::time::Instant::now();
     debug!(project_path = %project_path, "get_project_github_status: starting");
 
-    // Get remote URL (with timeout)
+    // Get remote URL (with timeout) from whichever remote this project targets
+    // — not always `origin`, since a project can be wired to more than one.
+    let remote = crate::commands::git::active_remote(&project);
     let step_start = std::time::Instant::now();
     let Ok(mut remote_cmd) = crate::utils::git_command_in(&project) else {
         return unlinked("not-a-repo", None);
     };
     remote_cmd
-        .args(["remote", "get-url", "origin"])
+        .args(["remote", "get-url", &remote])
         .env("PATH", get_extended_path());
 
     let remote_url = match run_command_with_timeout(

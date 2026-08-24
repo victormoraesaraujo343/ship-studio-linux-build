@@ -35,6 +35,12 @@ export interface AccountCredentialStatus {
   codexAuthEmail: string | null;
   opencodeAuthEmail: string | null;
   githubAuthEmail: string | null;
+  /**
+   * GitLab identity for this workspace, from `glab auth status`. Qualified with
+   * the host when it isn't gitlab.com ("victor (git.acme.com)"), since a
+   * company's self-hosted account is a different account with the same name.
+   */
+  gitlabAuthUsername: string | null;
   /** Vercel identity verified with this workspace's token; null if unset/invalid. */
   vercelUsername: string | null;
   hasAnthropicBaseUrl: boolean;
@@ -79,6 +85,7 @@ export const STATUS_FIELD_TO_KEY: Record<
     | 'codexAuthEmail'
     | 'opencodeAuthEmail'
     | 'githubAuthEmail'
+    | 'gitlabAuthUsername'
     | 'vercelUsername'
   >,
   CredentialKey
@@ -194,7 +201,7 @@ export async function clearAccountCredential(id: string, key: CredentialKey): Pr
  * CLI's own login under the workspace's env — so the connect PTY streams output
  * verbatim and treats process exit as completion.
  */
-export type WorkspaceConnectService = 'github' | 'codex' | 'opencode';
+export type WorkspaceConnectService = 'github' | 'gitlab' | 'codex' | 'opencode';
 
 /**
  * Start a backend-owned PTY login for a workspace's GitHub/Codex/Opencode

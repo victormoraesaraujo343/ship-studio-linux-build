@@ -182,6 +182,11 @@ pub struct ProjectMetadata {
     /// Whether to prefix branch names with username (default true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch_prefix_username: Option<bool>,
+    /// Which git remote this project pushes to and fetches from. `None` means
+    /// no preference — resolved to `origin`, or to the sole remote when the
+    /// repo has exactly one under another name. See `commands::git::remotes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_remote: Option<String>,
     /// Information about auto-stashed changes from branch switching
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stash_info: Option<StashInfo>,
@@ -269,6 +274,7 @@ impl Default for ProjectMetadata {
             publish: PublishMetadata::default(),
             last_opened: None,
             branch_prefix_username: None,
+            git_remote: None,
             stash_info: None,
             health: None,
             auto_accept_mode: None,
@@ -912,6 +918,11 @@ pub struct AccountCredentialStatus {
     pub codex_auth_email: Option<String>,
     pub opencode_auth_email: Option<String>,
     pub github_auth_email: Option<String>,
+    /// GitLab identity (`glab auth status`) for this workspace's config dir.
+    /// `None` when `glab` is absent or no host is authenticated. Unlike GitHub
+    /// this can name a self-hosted host's account, since that is where company
+    /// GitLab logins live.
+    pub gitlab_auth_username: Option<String>,
     /// Vercel identity (`vercel whoami`) verified with this workspace's injected
     /// `VERCEL_TOKEN`. `None` when no token is set or the token is invalid.
     pub vercel_username: Option<String>,

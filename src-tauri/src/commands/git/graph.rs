@@ -41,6 +41,10 @@ impl RawBranch {
 /// Mirrors `list_branches` but does no background fetch — the graph reflects
 /// whatever refs are already present.
 fn list_raw_branches(path: &std::path::Path) -> Vec<RawBranch> {
+    // Remote-tracking refs are named `<remote>/<branch>`, so the prefix to strip
+    // and the bare name to skip both follow whichever remote this project uses.
+    let remote = crate::commands::git::active_remote(path);
+    let remote_prefix = format!("{remote}/");
     let Ok(mut cmd) = crate::utils::git_command_in(path) else {
         return Vec::new();
     };
@@ -77,11 +81,11 @@ fn list_raw_branches(path: &std::path::Path) -> Vec<RawBranch> {
             continue;
         }
         let raw_name = parts[0].trim();
-        if raw_name.is_empty() || raw_name == "origin" || raw_name.contains("HEAD") {
+        if raw_name.is_empty() || raw_name == remote || raw_name.contains("HEAD") {
             continue;
         }
 
-        let (name, is_remote) = match raw_name.strip_prefix("origin/") {
+        let (name, is_remote) = match raw_name.strip_prefix(remote_prefix.as_str()) {
             Some(stripped) => (stripped.to_string(), true),
             None => (raw_name.to_string(), false),
         };

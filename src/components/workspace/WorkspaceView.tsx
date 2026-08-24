@@ -43,6 +43,7 @@ import { WorkspaceSidebar } from './WorkspaceSidebar';
 import { PluginSlot } from '../plugins/PluginSlot';
 import { UpdateBanner } from '../UpdateBanner';
 import { trackEvent } from '../../lib/analytics';
+import { providerTerms } from '../../lib/gitProvider';
 import { useWorkspaceCommands } from '../../commands/useWorkspaceCommands';
 import {
   CameraIcon,
@@ -997,11 +998,11 @@ export const WorkspaceView = memo(function WorkspaceView({
               setIsPreviewHidden(false);
               setWorkspaceTab('prs');
             }}
-            title="PRs"
+            title={providerTerms(integrations.projectGithub?.provider).changeRequestPluralSentence}
             data-education-id="prs-tab"
           >
             <PullRequestIcon size={14} />
-            <span>PRs</span>
+            <span>{`${providerTerms(integrations.projectGithub?.provider).abbrev}s`}</span>
           </button>
         </>
       )}

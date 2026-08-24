@@ -486,6 +486,26 @@ pub fn gh_config_dir(account_id: &str) -> PathBuf {
     private_account_subdir(account_id, "gh")
 }
 
+/// Directory used as `GLAB_CONFIG_DIR` for this account, created on access.
+///
+/// Mirrors `gh_config_dir`: the Default account resolves to the real, global
+/// `glab` config directory (honoring `GLAB_CONFIG_DIR`/`XDG_CONFIG_HOME` if
+/// already set, else `~/.config/glab-cli`) so an existing `glab auth login` —
+/// including one against a company's self-hosted host — keeps working. Other
+/// accounts get an isolated directory under `~/.ship-studio/accounts/<id>/`.
+pub fn glab_config_dir(account_id: &str) -> PathBuf {
+    if account_id == DEFAULT_ACCOUNT_ID {
+        if let Ok(dir) = std::env::var("GLAB_CONFIG_DIR") {
+            return PathBuf::from(dir);
+        }
+        let config_home = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".config"));
+        return config_home.join("glab-cli");
+    }
+    private_account_subdir(account_id, "glab")
+}
+
 /// Directory used as `CODEX_HOME` for this account, created on access.
 ///
 /// The Default account resolves to the real, global Codex directory
@@ -624,6 +644,10 @@ pub fn get_env_vars_for_account(account_id: &str) -> HashMap<String, String> {
             gh_config_dir(account_id).to_string_lossy().to_string(),
         );
         vars.insert(
+            "GLAB_CONFIG_DIR".to_string(),
+            glab_config_dir(account_id).to_string_lossy().to_string(),
+        );
+        vars.insert(
             "CODEX_HOME".to_string(),
             codex_home_dir(account_id).to_string_lossy().to_string(),
         );
@@ -705,6 +729,67 @@ pub fn get_env_vars_for_account(account_id: &str) -> HashMap<String, String> {
 /// `Logged in to github.com as <user>` while newer ones print
 /// `Logged in to github.com account <user>`. We accept both so modern `gh`
 /// installs aren't reported as "Not connected".
+/// Pull the authenticated identity out of a `glab auth status -a` report.
+///
+/// glab prints one block per configured host, and only an authenticated one
+/// carries a "Logged in to <host> as <user>" line — hosts with an expired or
+/// absent token show "No token found" instead. So the presence of that line is
+/// the signal; the surrounding ✓/✗ glyphs are not parsed (they vary with the
+/// terminal's unicode support, and glab exits non-zero whenever *any*
+/// configured host fails, which says nothing about the one we care about).
+///
+/// A self-hosted host is qualified in the returned string, because "victor" on
+/// the company GitLab and "victor" on gitlab.com are different accounts and the
+/// settings modal shows only one line.
+/// Hosts a `glab auth status -a` report shows as signed in.
+///
+/// Logout needs this because `glab auth logout` takes only `--hostname` (there
+/// is no `--all`), and a workspace's GitLab host is whatever instance the user
+/// chose — commonly a company's, never a constant we could hard-code the way
+/// the GitHub path hard-codes `github.com`.
+pub(crate) fn glab_logged_in_hosts(stdout: &str, stderr: &str) -> Vec<String> {
+    const MARKER: &str = "Logged in to ";
+    let mut hosts: Vec<String> = Vec::new();
+    for line in stdout.lines().chain(stderr.lines()) {
+        let Some(idx) = line.find(MARKER) else {
+            continue;
+        };
+        if let Some(host) = line[idx + MARKER.len()..].split_whitespace().next() {
+            let host = host.trim_end_matches(&[',', ':'][..]).to_ascii_lowercase();
+            if !host.is_empty() && !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
+    }
+    hosts
+}
+
+pub(crate) fn parse_glab_auth_status(stdout: &str, stderr: &str) -> Option<String> {
+    const MARKER: &str = "Logged in to ";
+
+    for line in stdout.lines().chain(stderr.lines()) {
+        let Some(idx) = line.find(MARKER) else {
+            continue;
+        };
+        let mut words = line[idx + MARKER.len()..].split_whitespace();
+        let (Some(host), Some("as"), Some(user)) = (words.next(), words.next(), words.next())
+        else {
+            continue;
+        };
+        // glab appends the credential source, e.g. "victor.araujo (keyring)".
+        let user = user.trim_end_matches(&[',', ':'][..]);
+        if user.is_empty() || host.is_empty() {
+            continue;
+        }
+        return Some(if host.eq_ignore_ascii_case("gitlab.com") {
+            user.to_string()
+        } else {
+            format!("{user} ({host})")
+        });
+    }
+    None
+}
+
 pub(crate) fn parse_gh_auth_status(stdout: &str, stderr: &str) -> Option<String> {
     const LOGGED_IN: &str = "Logged in to github.com ";
     const FAILED: &str = "Failed to log in to github.com ";
@@ -973,6 +1058,30 @@ pub async fn get_account_credential_status(
         Err(_) => None,
     };
 
+    // GitLab identity, mirroring the gh probe. `-a` because without it glab
+    // reports only the default instance, and a company's self-hosted host is
+    // exactly the one worth showing. A missing `glab` yields None rather than
+    // an error — GitLab is an alternative to GitHub here, never a requirement.
+    let gitlab_auth_username = if find_binary_by_name("glab").is_some() {
+        let mut glab_cmd = tokio::process::Command::from(create_command("glab"));
+        glab_cmd.args(["auth", "status", "-a"]);
+        glab_cmd.env("PATH", get_extended_path());
+        // Same rule as GH_CONFIG_DIR above: pin only for isolated workspaces so
+        // the Default workspace keeps finding the user's native glab login.
+        if id != DEFAULT_ACCOUNT_ID {
+            glab_cmd.env("GLAB_CONFIG_DIR", glab_config_dir(&id));
+        }
+        match run_with_timeout(glab_cmd, "glab auth status", 10).await {
+            Ok(output) => parse_glab_auth_status(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+            ),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     // Vercel identity, resolved the same way setup/status.rs does: verify the
     // workspace's injected token via `vercel whoami`. The Default workspace
     // (no injected token) falls back to the machine's native CLI session.
@@ -1007,6 +1116,7 @@ pub async fn get_account_credential_status(
         codex_auth_email,
         opencode_auth_email,
         github_auth_email,
+        gitlab_auth_username,
         vercel_username,
         has_anthropic_base_url: read_from_keychain(&id, "anthropic_base_url").is_some(),
         has_vercel_token: read_from_keychain(&id, "vercel_token").is_some(),
@@ -1531,6 +1641,7 @@ pub fn disconnect_claude_account(id: String) -> Result<(), CommandError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConnectService {
     Github,
+    Gitlab,
     Codex,
     Opencode,
 }
@@ -1539,6 +1650,7 @@ impl ConnectService {
     fn parse(s: &str) -> Option<Self> {
         match s {
             "github" => Some(Self::Github),
+            "gitlab" => Some(Self::Gitlab),
             "codex" => Some(Self::Codex),
             "opencode" => Some(Self::Opencode),
             _ => None,
@@ -1549,6 +1661,7 @@ impl ConnectService {
     fn binary(self) -> &'static str {
         match self {
             Self::Github => "gh",
+            Self::Gitlab => "glab",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
         }
@@ -1560,6 +1673,9 @@ impl ConnectService {
             // `--web` uses the device flow (prints a one-time code + opens the
             // browser); `--git-protocol https` skips the protocol prompt.
             Self::Github => &["auth", "login", "--web", "--git-protocol", "https"],
+            // No `--hostname`: `glab auth login` asks which instance, which is
+            // the whole point for a company's self-hosted GitLab.
+            Self::Gitlab => &["auth", "login"],
             Self::Codex => &["login"],
             Self::Opencode => &["auth", "login"],
         }
@@ -1858,19 +1974,54 @@ pub fn workspace_disconnect_service(id: String, service: String) -> Result<(), C
     let binary = find_binary_by_name(svc.binary()).ok_or_else(|| CommandError::Io {
         message: format!("{} CLI not found.", svc.binary()),
     })?;
-    let logout_args: &[&str] = match svc {
-        ConnectService::Github => &["auth", "logout", "--hostname", "github.com"],
-        ConnectService::Codex => &["logout"],
-        ConnectService::Opencode => &["auth", "logout"],
+    let account_env = get_env_vars_for_account(&id);
+    let run = |args: Vec<String>| {
+        let mut command = std::process::Command::new(&binary);
+        command.args(args);
+        command.env("PATH", get_extended_path());
+        for (k, v) in &account_env {
+            command.env(k, v);
+        }
+        // Best-effort: failures (e.g. "not logged in") are fine.
+        command.output()
     };
-    let mut command = std::process::Command::new(&binary);
-    command.args(logout_args);
-    command.env("PATH", get_extended_path());
-    for (k, v) in get_env_vars_for_account(&id) {
-        command.env(k, v);
+
+    match svc {
+        // `glab auth logout` has no `--all`, and this workspace's instance is
+        // whatever the user picked — so ask the config which hosts are signed
+        // in and log each one out. An empty list means nothing to do.
+        ConnectService::Gitlab => {
+            let hosts = match run(vec!["auth".into(), "status".into(), "-a".into()]) {
+                Ok(output) => glab_logged_in_hosts(
+                    &String::from_utf8_lossy(&output.stdout),
+                    &String::from_utf8_lossy(&output.stderr),
+                ),
+                Err(_) => Vec::new(),
+            };
+            for host in hosts {
+                let _ = run(vec![
+                    "auth".into(),
+                    "logout".into(),
+                    "--hostname".into(),
+                    host,
+                ]);
+            }
+        }
+        _ => {
+            let logout_args: Vec<String> = match svc {
+                ConnectService::Github => vec![
+                    "auth".into(),
+                    "logout".into(),
+                    "--hostname".into(),
+                    "github.com".into(),
+                ],
+                ConnectService::Codex => vec!["logout".into()],
+                ConnectService::Opencode => vec!["auth".into(), "logout".into()],
+                ConnectService::Gitlab => unreachable!("handled above"),
+            };
+            let _ = run(logout_args);
+        }
     }
-    // Best-effort: failures (e.g. "not logged in") are fine.
-    let _ = command.output();
     // Logging out changes this workspace's GitHub identity — drop any cached
     // username so a subsequent lookup doesn't return the signed-out account.
     if matches!(svc, ConnectService::Github) {
@@ -2147,6 +2298,42 @@ mod tests {
         // dirs — so a tampered id can't smuggle in a forced GH_CONFIG_DIR either.
         let vars = get_env_vars_for_account("../../etc");
         assert!(!vars.contains_key("GH_CONFIG_DIR"));
+    }
+
+    #[test]
+    fn parse_glab_auth_status_prefers_the_authenticated_host() {
+        // The real shape from `glab auth status -a` with one dead host and one
+        // live one — the exact case that made glab exit non-zero while the
+        // company host was perfectly usable.
+        let out = "gitlab.com\n  x gitlab.com: API call failed: GET https://gitlab.com/api/v4/user: 401\n  ! No token found (checked config file, keyring, and environment variables).\ngit2bis.com.br\n  \u{2713} Logged in to git2bis.com.br as victor.araujo (keyring)\n";
+        assert_eq!(
+            parse_glab_auth_status(out, ""),
+            Some("victor.araujo (git2bis.com.br)".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_glab_auth_status_leaves_gitlab_com_unqualified() {
+        let out = "gitlab.com\n  \u{2713} Logged in to gitlab.com as octocat (keyring)\n";
+        assert_eq!(parse_glab_auth_status(out, ""), Some("octocat".to_string()));
+    }
+
+    #[test]
+    fn parse_glab_auth_status_reads_stderr_too() {
+        // glab writes the report to stderr; stdout stays empty.
+        let err =
+            "git2bis.com.br\n  \u{2713} Logged in to git2bis.com.br as victor.araujo (keyring)\n";
+        assert_eq!(
+            parse_glab_auth_status("", err),
+            Some("victor.araujo (git2bis.com.br)".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_glab_auth_status_none_when_no_host_is_logged_in() {
+        let out = "gitlab.com\n  ! No token found (checked config file, keyring, and environment variables).\n";
+        assert_eq!(parse_glab_auth_status(out, ""), None);
+        assert_eq!(parse_glab_auth_status("", ""), None);
     }
 
     #[test]

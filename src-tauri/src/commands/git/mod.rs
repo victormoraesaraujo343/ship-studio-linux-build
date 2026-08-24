@@ -7,9 +7,11 @@
 //! - `branches` — list, create, delete, switch branches
 //! - `sync` — fetch, pull, merge, commit, discard
 //! - `stash` — stash management, backups, restore
+//! - `remotes` — which remote a project pushes to / fetches from
 
 mod branches;
 mod graph;
+mod remotes;
 mod stash;
 mod status;
 mod sync;
@@ -17,6 +19,7 @@ mod worktree;
 
 pub use branches::*;
 pub use graph::*;
+pub use remotes::*;
 pub use stash::*;
 pub use status::*;
 pub use sync::*;

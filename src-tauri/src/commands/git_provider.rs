@@ -376,12 +376,13 @@ pub async fn remote_for_dir(dir: &std::path::Path) -> Result<Option<RemoteUrl>, 
         return Ok(None);
     }
 
+    let remote = crate::commands::git::active_remote(dir);
     let mut cmd = crate::utils::git_command_in(dir)?;
-    cmd.args(["remote", "get-url", "origin"]);
+    cmd.args(["remote", "get-url", &remote]);
 
     let output = run_with_timeout(
         tokio::process::Command::from(cmd),
-        "git remote get-url origin",
+        "git remote get-url",
         AUTH_PROBE_TIMEOUT_SECS,
     )
     .await?;

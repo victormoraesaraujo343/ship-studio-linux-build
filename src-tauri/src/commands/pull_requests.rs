@@ -161,6 +161,7 @@ pub async fn create_pull_request(
     base: String,
 ) -> Result<String, CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
 
     // Push the branch to the remote first (gh pr create requires this).
     // Through run_git_net — not a hand-built command — so HTTPS credentials
@@ -170,7 +171,7 @@ pub async fn create_pull_request(
     // process), and git's interactive fallback died with "could not read
     // Username for 'https://github.com': Device not configured" (issue #638).
     let push_output = crate::commands::git::run_git_net(
-        &["push", "-u", "origin", "HEAD"],
+        &["push", "-u", &remote, "HEAD"],
         &validated_path,
         "push",
     )

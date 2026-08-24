@@ -172,6 +172,7 @@ pub async fn restore_backup(
     commit_hash: String,
 ) -> Result<RestoreResult, CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
 
     info!("Restoring to backup via new branch");
 
@@ -325,7 +326,7 @@ pub async fn restore_backup(
     // 5. Push the new branch to remote
     info!("Pushing restore branch");
     let push_output = crate::utils::git_command_in(&validated_path)?
-        .args(["push", "-u", "origin", &branch_name])
+        .args(["push", "-u", &remote, &branch_name])
         .output()
         .map_err(|e| e.to_string())?;
 

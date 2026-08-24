@@ -32,6 +32,10 @@ use super::{
 #[instrument(name = "list_branches", skip(project_path), fields(project = %project_path))]
 pub async fn list_branches(project_path: String) -> Result<Vec<BranchInfo>, CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    // See list_raw_branches in graph.rs: remote-tracking names carry the remote
+    // as their prefix, so both the skip test and the strip follow the project's.
+    let remote = crate::commands::git::active_remote(&validated_path);
+    let remote_prefix = format!("{remote}/");
     debug!("Listing branches");
 
     // Fetch all remotes in background (throttled to avoid redundant network I/O).
@@ -118,14 +122,14 @@ pub async fn list_branches(project_path: String) -> Result<Vec<BranchInfo>, Comm
         }
 
         let raw_name = parts[0].trim();
-        if raw_name == "HEAD" || raw_name.contains("HEAD") || raw_name == "origin" {
+        if raw_name == "HEAD" || raw_name.contains("HEAD") || raw_name == remote {
             continue;
         }
 
-        let (name, is_remote) = if raw_name.starts_with("origin/") {
+        let (name, is_remote) = if raw_name.starts_with(remote_prefix.as_str()) {
             (
                 raw_name
-                    .strip_prefix("origin/")
+                    .strip_prefix(remote_prefix.as_str())
                     .unwrap_or(raw_name)
                     .to_string(),
                 true,
@@ -134,7 +138,7 @@ pub async fn list_branches(project_path: String) -> Result<Vec<BranchInfo>, Comm
             (raw_name.to_string(), false)
         };
 
-        if name.is_empty() || name == "origin" {
+        if name.is_empty() || name == remote {
             continue;
         }
 
@@ -446,6 +450,7 @@ pub async fn create_branch(
     from_branch: String,
 ) -> Result<(), CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
     info!("Creating new branch");
 
     // Validate branch name
@@ -512,7 +517,7 @@ pub async fn create_branch(
             plain.clone()
         } else {
             // Only the remote has it — fetch, then use the tracking ref.
-            let _ = run_git_net(&["fetch", "origin"], &validated_path, "fetch origin").await;
+            let _ = run_git_net(&["fetch", &remote], &validated_path, "fetch remote").await;
             format!("origin/{plain}")
         };
 
@@ -586,6 +591,7 @@ pub async fn create_branch(
 #[instrument(name = "push_branch", skip(project_path), fields(project = %project_path, branch = %branch_name))]
 pub async fn push_branch(project_path: String, branch_name: String) -> Result<(), CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
 
     // Reject names git couldn't safely take as a ref argument.
     if branch_name.is_empty()
@@ -598,7 +604,7 @@ pub async fn push_branch(project_path: String, branch_name: String) -> Result<()
 
     info!("Publishing branch to GitHub");
     let output = run_git_net(
-        &["push", "-u", "origin", &branch_name],
+        &["push", "-u", &remote, &branch_name],
         &validated_path,
         "push branch",
     )
@@ -660,6 +666,7 @@ pub async fn delete_branch(
     delete_remote: bool,
 ) -> Result<(), CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
     info!(delete_remote, "Deleting branch");
 
     // Reject ref names git could parse as an option (argument injection).
@@ -717,7 +724,7 @@ pub async fn delete_branch(
     // Delete remote branch if requested
     if delete_remote {
         let remote_output = run_git_net(
-            &["push", "origin", "--delete", &branch_name],
+            &["push", &remote, "--delete", &branch_name],
             &validated_path,
             "push origin --delete",
         )

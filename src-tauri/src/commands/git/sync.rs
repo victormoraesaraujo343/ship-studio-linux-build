@@ -154,9 +154,10 @@ pub async fn pull_and_merge(
     merge_branch: Option<String>,
 ) -> Result<String, CommandError> {
     let validated_path = validate_project_path(&project_path)?;
+    let remote = crate::commands::git::active_remote(&validated_path);
 
     // First fetch to ensure we have latest refs. Ignore failure (best-effort).
-    let _ = run_git_net(&["fetch", "origin"], &validated_path, "fetch origin").await;
+    let _ = run_git_net(&["fetch", &remote], &validated_path, "fetch remote").await;
 
     let output = if let Some(branch) = merge_branch {
         let merge_ref = format!("origin/{branch}");
