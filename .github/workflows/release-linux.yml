@@ -92,33 +92,37 @@ jobs:
             --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       # The AppImage built here opened as a white window on an Arch-based
-      # machine, logging
+      # machine (KDE/Wayland, Mesa 26.2, wayland 1.26), logging
       #
       #   Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...
       #
       # WebKit aborts its renderer there and paints nothing while the process
-      # stays up. What is established:
+      # stays up. The cause is now pinned rather than inferred: bisecting the
+      # bundled libraries on the machine that fails singles out exactly one,
+      # libwayland-client.so.0. Removing only that file from the published
+      # 0.18.7 AppImage and repackaging it makes the app render, verified by
+      # screenshot; removing libwayland-egl alone — which is what this step did
+      # before — changes nothing.
       #
-      #   built here (ubuntu-22.04 libraries)  -> fails on that machine
-      #   built on that machine (its own libs) -> works
-      #   the binary run unbundled             -> works
+      # The mechanism: linuxdeploy copies ~150 system libraries into the AppDir
+      # and an AppImage puts its own lib directory ahead of the host's, so the
+      # runner's wayland 1.20 copy shadows the host's. GTK creates its
+      # wl_display through that copy, while Mesa's EGL resolves from the host
+      # and is handed a display object it does not recognise — EGL_BAD_PARAMETER.
+      # The other patterns below stay: none of them appeared in this build, and
+      # every one would fail the same way if a future runner pulled it in.
       #
-      # So it is the bundled dependency closure, not the app and not the
-      # driver. linuxdeploy copies ~150 system libraries into the AppDir and
-      # an AppImage puts its own lib directory ahead of the host's, so on a
-      # distro whose graphics stack has moved on, Ubuntu 22.04's copies shadow
-      # libraries that have to match the running driver. (Independent evidence
-      # of how far apart the two are: this AppDir cannot even be repackaged on
-      # Arch — it references libtiff.so.5, which no longer exists there.)
+      # Packaging goes through linuxdeploy's appimage plugin, not linuxdeploy
+      # itself. `linuxdeploy --appdir` *redeploys* the dependency closure, which
+      # silently undid the removal: the 0.18.7 log shows this step reporting
+      # "Removing bundled libwayland-egl.so.1", then linuxdeploy announcing
+      # "Deploying dependencies for existing files in AppDir" — and the shipped
+      # artifact still contains the library. The plugin only turns an AppDir
+      # into an AppImage and deploys nothing.
       #
-      # Removing the graphics libraries so they resolve from the host is the
-      # standard remedy and the only lever available, since Tauri exposes no
-      # exclude list for its AppImage bundler. Note it is NOT yet confirmed to
-      # fix the reported machine: deleting libwayland-egl locally appeared to
-      # fix it, but a pristine local build containing that same library works
-      # fine, so that result was the build host changing, not the deletion.
-      # The check that will actually settle it is running this workflow's
-      # artifact on the machine that failed.
+      # Note that the smoke test below cannot catch this class of bug. It runs
+      # the AppImage on the same ubuntu-22.04 that built it, where the bundled
+      # copies match the host's and EGL initialises fine.
       - name: Unbundle host graphics libraries and repackage
         env:
           NO_STRIP: '1'
@@ -142,9 +146,12 @@ jobs:
           # The AppDir is named after productName, which contains a space
           # ("Ship Studio.AppDir"), so every path here has to survive it —
           # -print0 with a null-delimited read rather than word splitting.
+          PATTERNS=( 'libwayland-client.so*' 'libwayland-egl.so*' \
+                     'libEGL.so*' 'libGL.so*' 'libGLX.so*' \
+                     'libgbm.so*' 'libdrm.so*' 'libGLdispatch.so*' )
+
           REMOVED=0
-          for pattern in 'libwayland-egl.so*' 'libEGL.so*' 'libGL.so*' 'libGLX.so*' \
-                         'libgbm.so*' 'libdrm.so*' 'libGLdispatch.so*'; do
+          for pattern in "${PATTERNS[@]}"; do
             while IFS= read -r -d '' f; do
               echo "Removing bundled $(basename "$f") — must come from the host"
               rm -f "$f"
@@ -162,15 +169,21 @@ jobs:
           fi
 
           rm -f "$BUNDLE_DIR"/*.AppImage
-          LD=$(find "$HOME/.cache/tauri" -name 'linuxdeploy-*.AppImage' -type f | head -1)
-          if [ -z "$LD" ]; then
-            echo "linuxdeploy is not in Tauri's cache — cannot repackage."
+          # Tauri downloads this alongside linuxdeploy itself; the -plugin-
+          # infix is what keeps the glob off linuxdeploy-x86_64.AppImage, whose
+          # dependency deployment is the thing being avoided here.
+          PLUGIN=$(find "$HOME/.cache/tauri" \
+                     -name 'linuxdeploy-plugin-appimage-*.AppImage' -type f | head -1)
+          if [ -z "$PLUGIN" ]; then
+            echo "linuxdeploy's appimage plugin is not in Tauri's cache — cannot"
+            echo "repackage. Packaging with linuxdeploy itself is not a fallback:"
+            echo "it would redeploy the libraries just removed."
             exit 1
           fi
-          chmod +x "$LD"
-          "$LD" --appdir "$APPDIR" --output appimage
+          chmod +x "$PLUGIN"
+          "$PLUGIN" --appdir "$APPDIR"
 
-          # linuxdeploy writes the AppImage into the working directory, not
+          # The plugin writes the AppImage into the working directory, not
           # beside the AppDir, so move it back where the next step looks.
           NEW=$(find . -maxdepth 1 -name '*.AppImage' -type f | head -1)
           if [ -z "$NEW" ]; then
@@ -179,6 +192,35 @@ jobs:
           fi
           mv "$NEW" "$BUNDLE_DIR"/
           ls -la "$BUNDLE_DIR"
+
+          # Assert against the artifact itself rather than trusting that the
+          # removal stuck. It did not stick once already, and nothing further
+          # down would have noticed: an AppImage that still shadows the host's
+          # libwayland-client starts fine, passes the smoke test on this runner,
+          # and fails only on a user's machine.
+          FINAL=$(find "$BUNDLE_DIR" -maxdepth 1 -name '*.AppImage' -type f | head -1)
+          FINAL=$(realpath "$FINAL")
+          EXTRACT_DIR=$(mktemp -d)
+          # --appimage-extract is the runtime's own flag and needs no FUSE, but
+          # APPIMAGE_EXTRACT_AND_RUN would have the runtime launch the app
+          # instead of honouring it, so it is unset for this one invocation.
+          ( cd "$EXTRACT_DIR" && env -u APPIMAGE_EXTRACT_AND_RUN "$FINAL" --appimage-extract >/dev/null )
+
+          FIND_EXPR=()
+          for pattern in "${PATTERNS[@]}"; do
+            FIND_EXPR+=( -o -name "$pattern" )
+          done
+          LEFTOVER=$(find "$EXTRACT_DIR/squashfs-root/usr/lib" -maxdepth 1 \
+                       \( -false "${FIND_EXPR[@]}" \) -printf '%f\n' 2>/dev/null)
+          rm -rf "$EXTRACT_DIR"
+
+          if [ -n "$LEFTOVER" ]; then
+            echo "The packaged AppImage still bundles libraries that have to come"
+            echo "from the host — packaging put them back:"
+            echo "$LEFTOVER"
+            exit 1
+          fi
+          echo "Verified: the packaged AppImage bundles none of them."
 
       # createUpdaterArtifacts is true in tauri.conf.json, which makes the build
       # demand TAURI_SIGNING_PRIVATE_KEY — a secret this fork does not have (the
