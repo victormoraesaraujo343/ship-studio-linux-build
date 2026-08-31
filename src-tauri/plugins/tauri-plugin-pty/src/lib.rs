@@ -14,6 +14,52 @@ use tauri::{
     AppHandle, Manager, Runtime,
 };
 
+/// Strip the environment an AppImage's runtime injects, so a spawned process
+/// loads the *host's* libraries instead of the ones bundled for the app.
+///
+/// `CommandBuilder` inherits our environment, and under an AppImage that
+/// environment points `LD_LIBRARY_PATH`, `PYTHONHOME`, `GTK_PATH` and friends
+/// into the mounted AppDir, whose libraries are built against the oldest glibc
+/// we support. Correct for us; wrong for a current host `node`, which dies with
+/// `undefined symbol: BrotliDecoderAttachDictionary` against our 2022 brotli.
+///
+/// Mirrors `utils::strip_appimage_env` in the app crate, which cannot be
+/// depended on from here (the app depends on this plugin, not the reverse).
+/// A no-op off Linux and outside an AppImage.
+#[allow(unused_variables)]
+fn strip_appimage_env(cmd: &mut CommandBuilder) {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(appdir) = std::env::var("APPDIR")
+            .ok()
+            .map(|dir| dir.trim_end_matches('/').to_string())
+            .filter(|dir| !dir.is_empty())
+        else {
+            return;
+        };
+        let prefix = format!("{appdir}/");
+        for (key, value) in std::env::vars() {
+            if !value.contains(&appdir) {
+                continue;
+            }
+            // Empty entries are dropped too: to the loader an empty component
+            // means "the current directory", and the runtime leaves a trailing
+            // one behind.
+            let kept: Vec<&str> = value
+                .split(':')
+                .filter(|entry| {
+                    !entry.is_empty() && *entry != appdir && !entry.starts_with(&prefix)
+                })
+                .collect();
+            if kept.is_empty() {
+                cmd.env_remove(OsString::from(&key));
+            } else {
+                cmd.env(OsString::from(&key), OsString::from(kept.join(":")));
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct PluginState {
     session_id: AtomicU32,
@@ -79,6 +125,8 @@ async fn spawn<R: Runtime>(
 
     let mut cmd = CommandBuilder::new(&file);
     cmd.args(args);
+    // Applied before the caller's env so their values still win.
+    strip_appimage_env(&mut cmd);
     if let Some(cwd) = cwd {
         cmd.cwd(OsString::from(cwd));
     }

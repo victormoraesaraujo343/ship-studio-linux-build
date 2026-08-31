@@ -1384,6 +1384,7 @@ pub fn claude_connect_start(
         .map_err(|e| format!("clone_reader: {e}"))?;
 
     let mut cmd = CommandBuilder::new(&binary);
+    crate::utils::strip_appimage_env(&mut cmd);
     cmd.arg("setup-token");
     cmd.cwd(dirs::home_dir().unwrap_or_default());
     cmd.env("PATH", get_extended_path());
@@ -1767,6 +1768,7 @@ pub fn workspace_connect_start(
         .map_err(|e| format!("clone_reader: {e}"))?;
 
     let mut cmd = CommandBuilder::new(&binary);
+    crate::utils::strip_appimage_env(&mut cmd);
     for arg in svc.args() {
         cmd.arg(arg);
     }

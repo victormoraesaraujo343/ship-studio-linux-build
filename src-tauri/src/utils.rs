@@ -6,6 +6,96 @@ use std::process::Command;
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Instant;
 
+/// The mounted AppDir, when this process is itself running from an AppImage.
+///
+/// `APPDIR` is set by the AppImage runtime and points at the squashfs mount
+/// (`/tmp/.mount_XXXXXX`), which is gone the moment the app exits.
+#[cfg(target_os = "linux")]
+fn appimage_dir() -> Option<&'static str> {
+    static APPDIR: LazyLock<Option<String>> = LazyLock::new(|| {
+        std::env::var("APPDIR")
+            .ok()
+            .map(|dir| dir.trim_end_matches('/').to_string())
+            .filter(|dir| !dir.is_empty())
+    });
+    APPDIR.as_deref()
+}
+
+/// `value` with every `:`-separated entry inside `appdir` removed, plus empty
+/// entries — an empty `LD_LIBRARY_PATH`/`PATH` component means "the current
+/// directory" to the loader, and the runtime leaves a trailing one behind.
+/// `None` when nothing survives, i.e. the variable should be unset entirely.
+#[cfg(target_os = "linux")]
+fn strip_appdir_entries(value: &str, appdir: &str) -> Option<String> {
+    let prefix = format!("{appdir}/");
+    let kept: Vec<&str> = value
+        .split(':')
+        .filter(|entry| !entry.is_empty() && *entry != appdir && !entry.starts_with(&prefix))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(":"))
+}
+
+/// The environment edits that put a *child* process back on the host's system.
+///
+/// An AppImage bundles ~165 libraries built against the oldest glibc we support
+/// (Ubuntu 22.04) and its runtime puts that directory ahead of the host's in
+/// `LD_LIBRARY_PATH`, plus points a dozen toolkit variables — `PYTHONHOME`,
+/// `GTK_PATH`, `GIO_EXTRA_MODULES`, `PERLLIB`, … — inside the AppDir. That is
+/// correct for our own process, which was linked against exactly those
+/// libraries, and wrong for everything we spawn: agent CLIs, node, git and
+/// python are the *host's* binaries and must load the *host's* libraries.
+///
+/// Left inherited, the mismatch surfaces as a loader error the user cannot act
+/// on. The reported one is a current Node against our 2022 brotli:
+///
+/// ```text
+/// node: symbol lookup error: node: undefined symbol: BrotliDecoderAttachDictionary
+/// ```
+///
+/// (`BrotliDecoderAttachDictionary` arrived in brotli 1.1.0; the bundled copy is
+/// 1.0.9, and the host's 1.2.0 — which has it — never gets a look in.) Codex
+/// therefore died at startup on every launch, on a machine where running
+/// `codex` in any other terminal works.
+///
+/// So each affected variable is either rewritten without its AppDir entries or
+/// unset when that leaves nothing. Computed once: the AppDir path is fixed for
+/// the life of the process. Empty when not running from an AppImage, which
+/// makes every application site a no-op.
+#[cfg(target_os = "linux")]
+fn appimage_env_fixups() -> &'static [(String, Option<String>)] {
+    static FIXUPS: LazyLock<Vec<(String, Option<String>)>> = LazyLock::new(|| {
+        let Some(appdir) = appimage_dir() else {
+            return Vec::new();
+        };
+        std::env::vars()
+            .filter(|(_, value)| value.contains(appdir))
+            .map(|(key, value)| {
+                let cleaned = strip_appdir_entries(&value, appdir);
+                (key, cleaned)
+            })
+            .collect()
+    });
+    &FIXUPS
+}
+
+/// Apply [`appimage_env_fixups`] to a `portable-pty` command.
+///
+/// The `std::process::Command` half is handled inside [`create_command`], which
+/// every shelling-out site already goes through; PTY sessions build their
+/// command through `portable-pty` instead and need this called explicitly.
+/// A no-op off Linux and outside an AppImage.
+pub fn strip_appimage_env(cmd: &mut portable_pty::CommandBuilder) {
+    #[cfg(target_os = "linux")]
+    for (key, value) in appimage_env_fixups() {
+        match value {
+            Some(value) => cmd.env(key, value),
+            None => cmd.env_remove(key),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cmd;
+}
+
 /// Creates a `Command` that won't spawn a visible console window on Windows.
 /// On non-Windows platforms, this is identical to `Command::new()`.
 pub fn create_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
@@ -15,6 +105,15 @@ pub fn create_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    // Spawned binaries are the host's, so they get the host's libraries — see
+    // `appimage_env_fixups`. No-op unless we're running from an AppImage.
+    #[cfg(target_os = "linux")]
+    for (key, value) in appimage_env_fixups() {
+        match value {
+            Some(value) => cmd.env(key, value),
+            None => cmd.env_remove(key),
+        };
     }
     cmd
 }
@@ -293,6 +392,15 @@ fn pnpm_home_dirs(home: &std::path::Path, pnpm_home: Option<&str>) -> Vec<String
 /// Computes the extended PATH (uncached). Called by `get_extended_path()`.
 fn build_extended_path() -> String {
     let current_path = std::env::var("PATH").unwrap_or_default();
+
+    // Under an AppImage our own PATH leads with the AppDir's `usr/bin`. That is
+    // ours, not the host's, and this PATH is handed to spawned terminals — see
+    // `appimage_env_fixups`.
+    #[cfg(target_os = "linux")]
+    let current_path = match appimage_dir() {
+        Some(appdir) => strip_appdir_entries(&current_path, appdir).unwrap_or_default(),
+        None => current_path,
+    };
 
     #[cfg(windows)]
     let mut paths: Vec<String> = {
@@ -1741,6 +1849,62 @@ fn format_relative_time_from_now(timestamp_ms: u64, now_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    mod strip_appdir_entries {
+        // No `use super::*` here: it would be shadowed by this module's own
+        // name, which is why the calls below are fully qualified.
+        const APPDIR: &str = "/tmp/.mount_ship_sKOMPPL";
+
+        #[test]
+        fn drops_bundled_library_dirs_and_keeps_the_host_ones() {
+            let ld = format!("{APPDIR}/usr/lib/:{APPDIR}/usr/lib64/:/usr/lib:/opt/cuda/lib64");
+            assert_eq!(
+                super::super::strip_appdir_entries(&ld, APPDIR),
+                Some("/usr/lib:/opt/cuda/lib64".to_string())
+            );
+        }
+
+        #[test]
+        fn drops_the_empty_entry_the_runtime_leaves_trailing() {
+            // An empty PATH/LD_LIBRARY_PATH component means "the current
+            // directory" to the loader, and the AppImage runtime ends
+            // LD_LIBRARY_PATH with a colon. Inheriting that into a child
+            // running in a project makes it load libraries out of the repo.
+            let ld = format!("{APPDIR}/usr/lib/:/usr/lib:");
+            assert_eq!(
+                super::super::strip_appdir_entries(&ld, APPDIR),
+                Some("/usr/lib".to_string())
+            );
+        }
+
+        #[test]
+        fn unsets_a_variable_that_points_only_inside_the_appdir() {
+            // PYTHONHOME is the dangerous one: pointed at our bundle, the
+            // host's python refuses to start at all.
+            let home = format!("{APPDIR}/usr");
+            assert_eq!(super::super::strip_appdir_entries(&home, APPDIR), None);
+        }
+
+        #[test]
+        fn keeps_a_host_path_that_merely_starts_with_the_appdir_string() {
+            // Sibling mounts share the /tmp/.mount_ prefix, so the match has to
+            // be on a path boundary rather than on the raw string.
+            let ld = format!("{APPDIR}/usr/lib:{APPDIR}-other/usr/lib");
+            assert_eq!(
+                super::super::strip_appdir_entries(&ld, APPDIR),
+                Some(format!("{APPDIR}-other/usr/lib"))
+            );
+        }
+
+        #[test]
+        fn leaves_a_value_with_no_appdir_entries_alone() {
+            assert_eq!(
+                super::super::strip_appdir_entries("/usr/bin:/bin", APPDIR),
+                Some("/usr/bin:/bin".to_string())
+            );
+        }
+    }
 
     mod canonicalize_tagged_errors {
         use super::*;
