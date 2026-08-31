@@ -6,6 +6,20 @@ The latest entry is rendered inside the in-app update dialog, so write user-
 facing language — what changed, in plain English — not commit subjects.
 -->
 
+## Unreleased
+
+- **A plugin can take over the workspace** - Plugins are no longer confined to a toolbar button or a dropdown: one can now own a tab of its own beside Code and Branches, with the whole right pane under it. Selecting it hides the preview, and the tab falls back to Preview if you disable the plugin while it is open.
+
+
+## What's New in v0.18.7 (Linux)
+
+- **GitLab, not just GitHub** - Branches, pushes and merge requests follow the forge your project actually uses, instead of assuming GitHub and a remote called `origin`. GitLab sign-in is driven through `glab` the same way GitHub is through `gh`.
+- **Nothing is reported back** - Analytics and error reporting ship off by default in this fork.
+- **A bug that could log you out** - A stop signal aimed at process 0 reached the whole login session instead of the intended child, ending a desktop session outright. It can't happen now.
+- **Branch switching that takes the flag it needs** - Switching uses `git switch`, which accepts an option `git checkout` silently never did.
+- **Linux onboarding** - Setup drives your distribution's own package manager, and the terminal spawns your real login shell — fish included — rather than a hard-coded one.
+
+
 ## What's New in v0.18.6
 
 - **Two crash fixes** - No more panic on commit messages with accents/emoji/non-Latin text; closing a project can no longer crash via the dev-server logs terminal
