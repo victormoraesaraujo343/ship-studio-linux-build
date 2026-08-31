@@ -1,7 +1,8 @@
 # Building Ship Studio Plugins
 
 Ship Studio plugins are small ES modules that render React components into
-well-defined slots of the app (workspace toolbar, preview, terminal dropdown,
+well-defined slots of the app (workspace toolbar, a workspace tab of its own,
+preview, terminal dropdown,
 dashboard sidebar) and talk to the app through a sandboxed context: toasts,
 project info, plugin-scoped storage, shell commands in the project directory,
 and an allow-listed set of Tauri commands.
@@ -95,6 +96,7 @@ app. Available today:
 | `preview` | Preview pane chrome |
 | `terminal` | The terminal toolbar dropdown |
 | `sidebar` | Dashboard (projects view) sidebar |
+| `panel` | A workspace tab of its own, beside Code and Branches, owning the whole right pane. The tab is labelled with the manifest `name` and titled with its `description`. Selecting it hides the preview; the tab falls back to Preview if the plugin is disabled or uninstalled while selected |
 
 Slot components receive **no props** — all data comes from the plugin context
 (below). Each plugin renders inside its own error boundary: a crash shows an

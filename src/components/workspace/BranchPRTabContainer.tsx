@@ -7,6 +7,7 @@
  */
 
 import { BranchesTab } from '../branches/BranchesTab';
+import type { WorkspaceTab } from '../../hooks/useWorkspaceLayout';
 import { PullRequestsTab } from '../branches/PullRequestsTab';
 import { ConnectOverlay } from '../ConnectOverlay';
 import type { BranchInfo, PullRequestInfo } from '../../lib/branches';
@@ -14,8 +15,8 @@ import type { WorktreeInfo } from '../../lib/worktrees';
 import type { IntegrationState } from '../../hooks/useIntegrationStatus';
 
 export interface BranchPRTabContainerProps {
-  workspaceTab: 'preview' | 'code' | 'branches' | 'prs';
-  setWorkspaceTab: (tab: 'preview' | 'code' | 'branches' | 'prs') => void;
+  workspaceTab: WorkspaceTab;
+  setWorkspaceTab: (tab: WorkspaceTab) => void;
   /** Whether the project has its own preview surface (web iframe or mobile
    *  device mirror). Projects without one show the branches pane in the
    *  "preview" tab slot; projects with one must not. */

@@ -20,6 +20,7 @@ import {
   type RefObject,
 } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import type { WorkspaceTab } from '../../hooks/useWorkspaceLayout';
 import { logger } from '../../lib/logger';
 import { setTerminalState } from '../../lib/project';
 import { Terminal } from '../terminal/Terminal';
@@ -55,6 +56,7 @@ import {
   EyeOffIcon,
   UndoIcon,
   RedoIcon,
+  PuzzleIcon,
 } from '../icons';
 import { useSnapshots } from '../../hooks/useSnapshots';
 import { useWorktreeWorkflow } from '../../hooks/useWorktreeWorkflow';
@@ -203,8 +205,8 @@ interface LayoutProps {
   setShowHealthLogs: (show: boolean) => void;
   isPreviewHidden: boolean;
   setIsPreviewHidden: (hidden: boolean) => void;
-  workspaceTab: 'preview' | 'code' | 'branches' | 'prs';
-  setWorkspaceTab: (tab: 'preview' | 'code' | 'branches' | 'prs') => void;
+  workspaceTab: WorkspaceTab;
+  setWorkspaceTab: (tab: WorkspaceTab) => void;
 }
 
 interface PluginStateProps {
@@ -594,6 +596,18 @@ export const WorkspaceView = memo(function WorkspaceView({
   } = branchMgmt;
 
   const { loadedPlugins, pluginFailures, getSlotPlugins, reloadPlugins } = plugins;
+
+  // A plugin that renders a whole pane gets its own tab beside Code and
+  // Branches. Resolving the selected one here keeps the tab strip and the pane
+  // reading from the same answer, and lets a tab whose plugin was just disabled
+  // or uninstalled fall back instead of leaving the workspace blank.
+  const panelPlugins = getSlotPlugins('panel');
+  const activePanelPlugin = workspaceTab.startsWith('plugin:')
+    ? (panelPlugins.find((p) => `plugin:${p.info.manifest.id}` === workspaceTab) ?? null)
+    : null;
+  useEffect(() => {
+    if (workspaceTab.startsWith('plugin:') && !activePanelPlugin) setWorkspaceTab('preview');
+  }, [workspaceTab, activePanelPlugin, setWorkspaceTab]);
 
   const {
     autoAcceptMode,
@@ -1006,6 +1020,23 @@ export const WorkspaceView = memo(function WorkspaceView({
           </button>
         </>
       )}
+      {panelPlugins.map((plugin) => {
+        const tab: WorkspaceTab = `plugin:${plugin.info.manifest.id}`;
+        return (
+          <button
+            key={plugin.info.manifest.id}
+            className={`workspace-tab ${workspaceTab === tab && !isPreviewHidden ? 'active' : ''}`}
+            onClick={() => {
+              setIsPreviewHidden(false);
+              setWorkspaceTab(tab);
+            }}
+            title={plugin.info.manifest.description || plugin.info.manifest.name}
+          >
+            <PuzzleIcon size={14} />
+            <span>{plugin.info.manifest.name}</span>
+          </button>
+        );
+      })}
     </div>
   );
 
@@ -1523,6 +1554,17 @@ export const WorkspaceView = memo(function WorkspaceView({
                             projectPath={currentProject.path}
                             onSendToAgent={sendToClaude}
                             revealTarget={codeTarget}
+                          />
+                        </div>
+                      )}
+                      {activePanelPlugin && (
+                        <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+                          <PluginSlot
+                            name="panel"
+                            plugins={[activePanelPlugin]}
+                            project={pluginProject}
+                            actions={pluginActions}
+                            theme={pluginTheme}
                           />
                         </div>
                       )}
