@@ -44,20 +44,9 @@ import { WorkspaceSidebar } from './WorkspaceSidebar';
 import { PluginSlot } from '../plugins/PluginSlot';
 import { UpdateBanner } from '../UpdateBanner';
 import { trackEvent } from '../../lib/analytics';
-import { providerTerms } from '../../lib/gitProvider';
+import { WorkspaceTabs } from './WorkspaceTabs';
 import { useWorkspaceCommands } from '../../commands/useWorkspaceCommands';
-import {
-  CameraIcon,
-  CodeIcon,
-  CropIcon,
-  BranchIcon,
-  PullRequestIcon,
-  EyeIcon,
-  EyeOffIcon,
-  UndoIcon,
-  RedoIcon,
-  PuzzleIcon,
-} from '../icons';
+import { CameraIcon, CropIcon, UndoIcon, RedoIcon } from '../icons';
 import { useSnapshots } from '../../hooks/useSnapshots';
 import { useWorktreeWorkflow } from '../../hooks/useWorktreeWorkflow';
 import { ToolbarDropdown } from './ToolbarDropdown';
@@ -957,87 +946,15 @@ export const WorkspaceView = memo(function WorkspaceView({
     ) : null;
 
   const tabsNode = (
-    <div className="workspace-tabs">
-      {hasPreview && (
-        <button
-          className={`workspace-tab ${workspaceTab === 'preview' && !isPreviewHidden ? 'active' : ''}`}
-          onClick={() => {
-            setIsPreviewHidden(false);
-            setWorkspaceTab('preview');
-          }}
-          title="Preview"
-        >
-          <EyeIcon size={14} />
-          <span>Preview</span>
-        </button>
-      )}
-      {/* Focus mode — collapses the preview pane so the agent terminal takes the
-          full workspace. Active whenever the preview is hidden. */}
-      <button
-        className={`workspace-tab ${isPreviewHidden ? 'active' : ''}`}
-        onClick={() => setIsPreviewHidden(!isPreviewHidden)}
-        title={isPreviewHidden ? 'Exit focus mode' : 'Hide preview — agent only'}
-      >
-        <EyeOffIcon size={14} />
-        <span>Focus</span>
-      </button>
-      <button
-        className={`workspace-tab ${workspaceTab === 'code' && !isPreviewHidden ? 'active' : ''}`}
-        onClick={() => {
-          setIsPreviewHidden(false);
-          setWorkspaceTab('code');
-        }}
-        title="Code"
-      >
-        <CodeIcon size={14} />
-        <span>Code</span>
-      </button>
-      {integrations.projectGithub?.status === 'connected' && (
-        <>
-          <button
-            className={`workspace-tab ${workspaceTab === 'branches' && !isPreviewHidden ? 'active' : ''}`}
-            onClick={() => {
-              setIsPreviewHidden(false);
-              setWorkspaceTab('branches');
-            }}
-            title="Branches"
-            data-education-id="branches-tab"
-          >
-            <BranchIcon size={14} />
-            <span>Branches</span>
-          </button>
-          <button
-            className={`workspace-tab ${workspaceTab === 'prs' && !isPreviewHidden ? 'active' : ''}`}
-            onClick={() => {
-              setIsPreviewHidden(false);
-              setWorkspaceTab('prs');
-            }}
-            title={providerTerms(integrations.projectGithub?.provider).changeRequestPluralSentence}
-            data-education-id="prs-tab"
-          >
-            <PullRequestIcon size={14} />
-            <span>{`${providerTerms(integrations.projectGithub?.provider).abbrev}s`}</span>
-          </button>
-        </>
-      )}
-      {panelPlugins.map((plugin) => {
-        const tab: WorkspaceTab = `plugin:${plugin.info.manifest.id}`;
-        return (
-          <button
-            key={plugin.info.manifest.id}
-            className={`workspace-tab ${workspaceTab === tab && !isPreviewHidden ? 'active' : ''}`}
-            onClick={() => {
-              setIsPreviewHidden(false);
-              setWorkspaceTab(tab);
-            }}
-            title={plugin.info.manifest.description || plugin.info.manifest.name}
-          >
-            <PuzzleIcon size={14} />
-            <span>{plugin.info.manifest.name}</span>
-          </button>
-        );
-      })}
-    </div>
+    <WorkspaceTabs
+      hasPreview={hasPreview}
+      workspaceTab={workspaceTab}
+      setWorkspaceTab={setWorkspaceTab}
+      isPreviewHidden={isPreviewHidden}
+      setIsPreviewHidden={setIsPreviewHidden}
+      integrations={integrations}
+      panelPlugins={panelPlugins}
+    />
   );
 
   const header = WorkspaceHeader({
