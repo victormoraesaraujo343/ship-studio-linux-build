@@ -85,6 +85,27 @@ Storage: a global root beside the per-project one, most likely under
 winning on an id collision — so a project can pin a specific version of
 something you also run globally.
 
+## One URL, several plugins
+
+Install-from-URL requires `plugin.json` at the repo root, so a repository holding
+several plugins in subfolders cannot be installed at all — only dev-linked, one
+folder at a time, per project. That is the friction that started this whole
+thread.
+
+Splitting into one repo per plugin would satisfy the installer and bring the
+friction straight back: a URL to paste per plugin, in every project. The
+installer should learn packs instead — a repo whose root declares the plugins it
+contains, each in its own subfolder, installed together.
+
+With install scope above, that collapses the whole problem into one gesture:
+paste one URL, choose "all projects", done. Every plugin you own, everywhere,
+forever. Worth building in that order, because a pack installed per-project would
+still need repeating.
+
+Publishing to `ship-studio/plugin-registry` stays one repo per plugin — its
+entries carry a single `repo` field. A pack is for the plugins you keep, not for
+the ones you list.
+
 ## What it touches
 
 - Manifest: nothing new required. Pinning is user state, not plugin metadata.
@@ -100,5 +121,7 @@ something you also run globally.
 - A global plugin root beside `{project}/.shipstudio/plugins/`, and `list_plugins`
   merging both.
 - The install dialog: a scope choice next to the URL field.
+- `install_plugin`: recognise a pack manifest at the repo root and install every
+  plugin it names, instead of assuming one plugin per clone.
 - `WorkspaceTab` already addresses plugin tabs as `plugin:{id}`, so selecting
   from the drawer needs no new tab model.
