@@ -58,18 +58,47 @@ new feature. So the first run after the change has to seed pins for the plugins
 that were previously promoted by name — after which the user can unpin them,
 which is the whole point.
 
+## Install scope: for this project, or for all of them
+
+Victor's, and the other half of the same problem. Plugins are project-level by
+construction — the registry and the files live at `{project}/.shipstudio/plugins/`
+— so a plugin you want everywhere has to be linked or installed again in every
+project you open. For a hosting plugin, or for one like Pedidos that is about how
+*you* work rather than about a particular repository, that is pure friction.
+
+So the install dialog should ask, once, at the moment you paste the URL:
+**install for all projects**, or **install for this project only**. Both are
+right answers for different plugins, and the app currently only offers the
+narrower one.
+
+This decides the pin-scope question above rather than sitting beside it. A
+globally installed plugin wants a global pin — "the plugins I use" is a property
+of the person. A project-scoped plugin wants a pin that lives and dies with the
+project. So scope is chosen once at install, and pinning inherits it instead of
+being a second question the user has to answer.
+
+It also gives the drawer its shape: two groups, "everywhere" and "this project",
+rather than one flat list that hides where a plugin came from.
+
+Storage: a global root beside the per-project one, most likely under
+`~/.ship-studio/`, with `list_plugins` merging the two and the project's copy
+winning on an id collision — so a project can pin a specific version of
+something you also run globally.
+
 ## What it touches
 
 - Manifest: nothing new required. Pinning is user state, not plugin metadata.
-- Pin state: per project or global? Global is the likely answer — "the plugins I
-  use" is a property of the person, not of the repository — but per-project is
-  arguable for a plugin that only makes sense in some projects. Still open.
+- Pin state follows install scope (see above), so it is not a separate question.
 - A one-time migration seeding pins for `vercel`, `cloudflare` and `netlify`, so
   no one loses a button they already had.
 - `WorkspaceView`: the tab strip renders pinned `panel` plugins instead of every
   one, plus the constant puzzle entry.
 - `WorkspaceHeader`: `toolbarPlugins.hosting` gives way to "pinned `toolbar`
   plugins", removing the hardcoded name list.
-- The drawer: a list, and a pin toggle per row.
+- The drawer: two groups — everywhere, and this project — with a pin toggle per
+  row.
+- A global plugin root beside `{project}/.shipstudio/plugins/`, and `list_plugins`
+  merging both.
+- The install dialog: a scope choice next to the URL field.
 - `WorkspaceTab` already addresses plugin tabs as `plugin:{id}`, so selecting
   from the drawer needs no new tab model.
