@@ -172,12 +172,20 @@ jobs:
           # Tauri downloads this alongside linuxdeploy itself; the -plugin-
           # infix is what keeps the glob off linuxdeploy-x86_64.AppImage, whose
           # dependency deployment is the thing being avoided here.
+          #
+          # Tauri renames it on the way into the cache: the release asset is
+          # linuxdeploy-plugin-appimage-x86_64.AppImage, the cached file is
+          # linuxdeploy-plugin-appimage.AppImage. Matching the asset name found
+          # nothing and failed this step on 0.18.8's first tag, so the arch
+          # suffix has to be optional.
           PLUGIN=$(find "$HOME/.cache/tauri" \
-                     -name 'linuxdeploy-plugin-appimage-*.AppImage' -type f | head -1)
+                     -name 'linuxdeploy-plugin-appimage*.AppImage' -type f | head -1)
           if [ -z "$PLUGIN" ]; then
             echo "linuxdeploy's appimage plugin is not in Tauri's cache — cannot"
             echo "repackage. Packaging with linuxdeploy itself is not a fallback:"
             echo "it would redeploy the libraries just removed."
+            echo "Cache contents, so the next failure names its own cause:"
+            ls -la "$HOME/.cache/tauri" || echo "(no $HOME/.cache/tauri at all)"
             exit 1
           fi
           chmod +x "$PLUGIN"
