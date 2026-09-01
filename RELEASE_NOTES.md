@@ -8,6 +8,11 @@ facing language — what changed, in plain English — not commit subjects.
 
 ## Unreleased
 
+
+## What's New in v0.18.8 (Linux)
+
+- **The window that opened blank** - The AppImage carried the build machine's `libwayland-client` and put it ahead of yours, so the renderer was handed a display it could not use and died before drawing anything. The library is stripped now, and the build fails if it survives rather than publishing a window that never paints.
+- **Agents that died the moment they started** - Terminals and agent CLIs inherited the AppImage's own library paths, so a current `node` was handed 2022 libraries and refused to run. Everything Ship Studio spawns now gets your system's libraries, the way it does outside the AppImage.
 - **Plugins can own a workspace tab** - A plugin can take a tab beside Code and Branches and the whole pane under it, instead of a toolbar button or a dropdown row.
 
 
