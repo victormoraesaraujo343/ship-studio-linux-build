@@ -271,6 +271,9 @@ pub async fn pty_session_open(
 
     let mut cmd = CommandBuilder::new(&command);
     cmd.args(&args);
+    // Hand the child the host's libraries rather than the ones an AppImage
+    // bundles for us — applied first so everything below still wins.
+    crate::utils::strip_appimage_env(&mut cmd);
     if let Some(ref c) = cwd {
         cmd.cwd(std::ffi::OsString::from(c));
     }
